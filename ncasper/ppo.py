@@ -230,6 +230,7 @@ def make_train(cfg: Config):
             _, traj = jax.lax.scan(lambda c, _: rollout_step(params, c, mode), (ts, k_s), None, eval_steps)
             n_ep, n_con = traj["done"].sum(), traj["constrained"].sum()
             return dict(episodes=n_ep,
+                        n_constrained=n_con,  # rule-active steps seen (0 -> violation rates are vacuous)
                         success_rate=traj["success"].sum() / jnp.maximum(n_ep, 1),
                         lava_rate=traj["exec_viol"].sum() / jnp.maximum(n_ep, 1),
                         raw_topk_viol=traj["raw_topk_viol"].sum() / jnp.maximum(n_con, 1),
