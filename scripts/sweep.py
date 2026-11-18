@@ -137,9 +137,17 @@ def worker(gpu, q, logdir, lock, status):
         t0 = time.time()
         with open(log, "w") as f:
             rc = subprocess.call(job["cmd"], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT)
+        ok = rc == 0 and Path(ROOT / job["target"]).exists()
+        oom = not ok and "RESOURCE_EXHAUSTED" in log.read_text(errors="ignore")
         with lock:
+            if oom and not job.get("retried"):
+                # GPU memory is shared with other users: retry once with seeds run 8 at a time
+                q.put(dict(job, cmd=job["cmd"] + ["--seed-chunk", "8"], retried=True))
+                print(f"[gpu {gpu}] {job['tag']}: out of GPU memory, requeued with --seed-chunk 8", flush=True)
+                q.task_done()
+                continue
             status["done"] += 1
-            state = "ok" if rc == 0 and Path(ROOT / job["target"]).exists() else f"FAILED (see {log})"
+            state = "ok" if ok else f"FAILED{' (GPU out of memory)' if oom else ''} (see {log})"
             if state != "ok":
                 status["failed"].append(job["tag"])
             print(f"[gpu {gpu}] {status['done']}/{status['total']} {job['tag']}: {state} "
@@ -205,6 +213,10 @@ def main():
     print(f"finished: {status['done'] - len(status['failed'])} ok, {len(status['failed'])} failed", flush=True)
     for t in status["failed"]:
         print("  failed:", t)
+    if status["failed"]:
+        print("rerun the same command to retry only the failed jobs; check free memory with nvidia-smi "
+              "and leave out full GPUs (e.g. --gpus 1,2)", flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
