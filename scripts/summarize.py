@@ -1,7 +1,12 @@
-"""Summarise a results/<tag> directory: table (mean ± s.e.m. over seeds), paired
-casper-vs-mask tests (seeds are paired: same init and env resets), and a plot.
+"""Summarise one or more results/<tag> directories: table (mean ± s.e.m. over seeds),
+paired tests of casper against every other shield (seeds are paired: same init and
+env resets), and a plot. Several directories are merged into one table, e.g. a base
+run plus extra baselines trained later with the same seeds:
 
     python scripts/summarize.py results/LavaGapS7_k2
+    python scripts/summarize.py results/DistShift1_k2 results/DistShift1_k2_pen0.1 results/DistShift1_k2_pen1 results/DistShift1_k2_pen10
+
+The summary and plot are written to the first directory.
 
 Metrics:
   train success / lava   last 10% of updates; lava = lava falls per episode
@@ -42,13 +47,30 @@ def _fmt(x):
     return f"{m:.3f} ± {se:.3f}"
 
 
+def _label(stem, cfg):
+    if stem == "mask_pen":
+        return f"mask_pen λ={cfg.get('penalty_lambda')}"
+    if stem == "casper" and cfg.get("casper_gamma", 0.0) != 0.0:
+        return f"casper γ={cfg.get('casper_gamma')}"
+    return stem
+
+
 def main():
-    root = Path(sys.argv[1] if len(sys.argv) > 1 else "results")
-    cfg = json.loads((root / "config.json").read_text()) if (root / "config.json").exists() else {}
-    data = {p.stem: dict(np.load(p)) for p in sorted(root.glob("*.npz"))}
-    order = [s for s in ("none", "mask", "casper") if s in data] + [s for s in data if s not in ("none", "mask", "casper")]
+    roots = [Path(a) for a in (sys.argv[1:] or ["results"])]
+    root = roots[0]
+    cfgs = {r: json.loads((r / "config.json").read_text()) if (r / "config.json").exists() else {} for r in roots}
+    cfg = cfgs[root]
+    data = {}
+    for r in roots:
+        for p in sorted(r.glob("*.npz")):
+            label = _label(p.stem, cfgs[r])
+            if label in data:
+                label = f"{label} [{r.name}]"
+            data[label] = dict(np.load(p))
+    base = ("none", "mask", "casper")
+    order = [s for s in base if s in data] + [s for s in data if s not in base]
     n_seeds = {s: len(data[s]["seeds"]) for s in order}
-    lines = [f"# {root.name}",
+    lines = [f"# {' + '.join(r.name for r in roots)}",
              f"env {cfg.get('env_id')}, k = {cfg.get('k')}, budget {cfg.get('budget')} steps/seed, "
              f"seeds {n_seeds}, CASPER eps {cfg.get('casper_eps')}, gamma {cfg.get('casper_gamma')}, "
              f"lambda {cfg.get('casper_lambda')}, explore eps {cfg.get('explore_eps')}", "",
@@ -56,17 +78,19 @@ def main():
     for name, fn in ROWS:
         lines.append(f"| {name} | " + " | ".join(_fmt(fn(data[s])) for s in order) + " |")
 
-    if "mask" in data and "casper" in data:
-        lines += ["", "Paired casper − mask (same seeds), Wilcoxon signed-rank:", "",
+    try:
+        from scipy.stats import wilcoxon
+    except ImportError:
+        wilcoxon = None
+    for other in [s for s in order if s not in ("casper", "none")]:
+        if "casper" not in data:
+            break
+        lines += ["", f"Paired casper − {other} (same seeds), Wilcoxon signed-rank:", "",
                   "| metric | mean diff | casper better in | p |", "|---|---|---|---|"]
-        try:
-            from scipy.stats import wilcoxon
-        except ImportError:
-            wilcoxon = None
-        common = np.intersect1d(data["mask"]["seeds"], data["casper"]["seeds"])
+        common = np.intersect1d(data[other]["seeds"], data["casper"]["seeds"])
         for name, fn in ROWS[:-1]:
             a = fn(data["casper"])[np.isin(data["casper"]["seeds"], common)]
-            b = fn(data["mask"])[np.isin(data["mask"]["seeds"], common)]
+            b = fn(data[other])[np.isin(data[other]["seeds"], common)]
             d = a - b
             ok = np.isfinite(d)
             lower_better = "lava" in name or "viol" in name

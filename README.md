@@ -20,6 +20,7 @@ All act on the policy's output distribution p = softmax(logits). The agent sampl
 |---|---|---|---|
 | `none` | p | top-k(p) | none |
 | `mask` | p restricted to S, renormalised | top-k inside S | support ⊆ S |
+| `mask_pen` | as `mask`; the loss adds `--penalty-lambda` × (raw probability on forbidden actions) | top-k inside S | support ⊆ S |
 | `casper` | CASPER-k(p, S) | k largest of p inside S | support ⊆ S |
 
 - **CASPER-k** is the project's surrogate (a line-by-line port of `casper_k` from `casper_k/casperk_learning_study.py`, checked against it in `tests/`):
@@ -48,20 +49,31 @@ The final evaluation runs three modes:
 | `raw_topk` | top-k sampling from raw p, layer removed |
 | `raw_greedy` | argmax of raw p, layer removed |
 
-## Setup (GPU machine)
+## Setup (GPU machine, Python venv)
+
+Needs Python ≥ 3.10 and an NVIDIA driver recent enough for CUDA 12.
 
 ```bash
-conda create -n navix-casper python=3.11 -y && conda activate navix-casper
-pip install -U "jax[cuda12]"
+cd navix-casper
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -U "jax[cuda12]"                  # JAX with bundled CUDA 12 libraries
 pip install -r requirements.txt
-pytest -q
+python -c "import jax; print(jax.devices())"  # should list CudaDevice(...), not CpuDevice
+pytest -q                                     # the PyTorch reference test is skipped without torch
 ```
+
+Activate the venv (`source .venv/bin/activate`) in every new shell before running anything.
+`.venv/` is git-ignored.
 
 ## Run
 
 ```bash
 python scripts/run.py --seeds 32 --budget 5000000                        # LavaGapS7, k = 2: none / mask / casper
 python scripts/summarize.py results/LavaGapS7_k2                          # table, paired tests, curves.png
+python scripts/run.py --shields mask_pen --penalty-lambda 1 --seeds 32 --tag LavaGapS7_k2_pen1   # extra baseline, same seeds
+python scripts/summarize.py results/LavaGapS7_k2 results/LavaGapS7_k2_pen1  # merged table, casper vs every shield
 python scripts/run.py --env-id Navix-LavaCrossingS9N1-v0 --seeds 32 --budget 5000000
 python scripts/run.py --shields mask casper --casper-gamma 1.0 --tag LavaGapS7_k2_gamma1
 bash scripts/run_all.sh                                                   # both envs + gamma = 1

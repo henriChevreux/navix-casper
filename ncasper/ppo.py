@@ -16,7 +16,8 @@ and k = 2 an agent can then lock out `forward` for good, and PPO's ratio blows
 up whenever the sampled action leaves the top-k. The mixture keeps support
 inside S, so the shields' guarantee holds. PPO's ratio and entropy use pi.
 Evaluation acts with q itself (pure top-k sampling). CASPER adds restoration
-lambda/2 ||z - p||^2.
+lambda/2 ||z - p||^2; mask_pen adds penalty_lambda * (raw probability on forbidden
+actions), the simple masking + penalty baseline.
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ class Config:
     casper_eps: float = 1e-3
     casper_gamma: float = 0.0  # 0 = plain CASPER-k; 1 = gamma-tilted margins
     casper_lambda: float = 1.0  # restoration weight (casper only)
+    penalty_lambda: float = 1.0  # mask_pen: weight of the forbidden-mass penalty sum_{j not in S} p_j
     budget: int = 1_000_000  # env steps per seed
     num_envs: int = 64
     num_steps: int = 128
@@ -152,8 +154,12 @@ def make_train(cfg: Config):
         entropy = -jnp.where(q > 0, q * jnp.log(jnp.maximum(q, 1e-30)), 0.0).sum(-1).mean()
         restoration = 0.5 * ((z - p) ** 2).sum(-1).mean()
         rest_w = cfg.casper_lambda if cfg.shield == "casper" else 0.0
-        total = actor + cfg.vf_coef * critic - cfg.ent_coef * entropy + rest_w * restoration
+        forbidden_mass = jnp.where(batch["allowed"], 0.0, p).sum(-1).mean()
+        pen_w = cfg.penalty_lambda if cfg.shield == "mask_pen" else 0.0
+        total = (actor + cfg.vf_coef * critic - cfg.ent_coef * entropy
+                 + rest_w * restoration + pen_w * forbidden_mass)
         return total, dict(actor=actor, critic=critic, entropy=entropy, restoration=restoration,
+                           forbidden_mass=forbidden_mass,
                            approx_kl=((ratio - 1) - (logq - batch["logq"])).mean())
 
     def train(rng):

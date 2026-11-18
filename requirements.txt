@@ -1,5 +1,4 @@
-# On the H200 machine install the CUDA build of JAX first, e.g.
-#   pip install -U "jax[cuda12]"
+# Inside the venv, install the CUDA build of JAX first:  pip install -U "jax[cuda12]"
 jax>=0.4.30
 navix>=0.7
 flax>=0.8
@@ -8,4 +7,5 @@ numpy
 scipy        # paired Wilcoxon tests in scripts/summarize.py
 matplotlib   # curves.png
 pytest
-torch        # optional: only for the test that checks CASPER-k against the PyTorch reference
+# Optional (~2 GB): only for the test that checks CASPER-k against the PyTorch reference;
+# without it that test is skipped.   pip install torch --index-url https://download.pytorch.org/whl/cpu

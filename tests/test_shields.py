@@ -75,3 +75,15 @@ def test_mask_topk_basic():
     z, T = mask_topk(p, jnp.array([[False, True, True]]), 2)
     np.testing.assert_allclose(np.asarray(z), [[0.0, 0.6, 0.4]], atol=1e-6)
     assert np.asarray(T).tolist() == [[False, True, True]]
+
+
+def test_mask_pen_is_mask_at_execution_and_penalty_lowers_forbidden():
+    logits, S = _batch(seed=7)
+    a = apply_shield(logits, S, "mask", 2)
+    b = apply_shield(logits, S, "mask_pen", 2)
+    for x, y in zip(a, b):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+    lg = jnp.array([1.0, 0.5, 3.0])
+    allowed = jnp.array([True, True, False])
+    g = jax.grad(lambda l: jnp.where(allowed, 0.0, jax.nn.softmax(l)).sum())(lg)
+    assert g[2] > 0 and g[0] < 0 and g[1] < 0  # descent lowers the forbidden logit
