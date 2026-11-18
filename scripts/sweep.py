@@ -12,6 +12,11 @@ Phase 2, confirm (fresh seeds 100..131): only the selected configurations.
   python scripts/sweep.py confirm --gpus 0,1,2
   python scripts/frontier.py confirm
 
+Follow-up, ablation (same seeds as confirm, LavaGapS7 only; exploratory): casper without
+restoration, and penalty lambda in {0.15, 0.2}.
+  python scripts/sweep.py ablation --gpus 0,1,2
+  python scripts/frontier.py ablation
+
 A cell is (environment, action setting, exploration eps). By default only the cells in
 DESIGN are run (6 with two maps); --full-grid runs every setting x eps combination. Methods, all on the
 output distribution (probability space):
@@ -55,11 +60,20 @@ DESIGN = [("a3k2", 0.05), ("a3k2", 0.15), ("a3k3", 0.05)]
 PEN_LAMBDAS = [0.01, 0.1, 0.3]  # spans "too weak" to "task collapses" on DistShift
 CASPER_GRID = [(0.0, 1.0)]  # (gamma, restoration lambda): the default, untuned
 UNTUNED = ("none", "mask", "casper_g0_l1")  # fixed settings: confirm phase only
-PHASES = {"tune": (0, 16), "confirm": (100, 32)}  # seed offset, number of seeds
+PHASES = {"tune": (0, 16), "confirm": (100, 32), "ablation": (100, 32)}  # seed offset, number of seeds
+# Follow-up, chosen after the confirm results (exploratory, same seeds as confirm so it's paired):
+#   casper with restoration lambda = 0: is the gain the layer's gradient or the restoration loss?
+#   penalty lambda between 0.1 and 0.3: compare with casper at matched violation.
+ABLATION = [("casper_g0_l0", "casper", ["--casper-gamma", "0.0", "--casper-lambda", "0.0"]),
+            ("pen0.15", "mask_pen", ["--penalty-lambda", "0.15"]),
+            ("pen0.2", "mask_pen", ["--penalty-lambda", "0.2"])]
+ABLATION_ENVS = ["Navix-LavaGapS7-v0"]  # DistShift's layer-removed violation is mostly vacuous
 
 
-def methods():
+def methods(phase="confirm"):
     """[(name, shield, extra flags)] for every method x hyperparameter."""
+    if phase == "ablation":
+        return ABLATION
     out = [("none", "none", []), ("mask", "mask", [])]
     out += [(f"pen{l:g}", "mask_pen", ["--penalty-lambda", str(l)]) for l in PEN_LAMBDAS]
     out += [(f"casper_g{g:g}_l{l:g}", "casper", ["--casper-gamma", str(g), "--casper-lambda", str(l)])
@@ -96,7 +110,7 @@ def build_jobs(phase, envs, cells, out, selection=None, budget_scale=1.0, n_seed
             if not chosen:
                 continue
             chosen |= set(UNTUNED)
-        for name, shield, method_flags in methods():
+        for name, shield, method_flags in methods(phase):
             if chosen is not None and name not in chosen:
                 continue
             if phase == "tune" and name in UNTUNED:
@@ -137,7 +151,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("phase", choices=list(PHASES))
     ap.add_argument("--gpus", default="0", help="comma-separated GPU ids, one worker each")
-    ap.add_argument("--envs", nargs="+", default=ENVS)
+    ap.add_argument("--envs", nargs="+", default=None, help="default: all (ablation: LavaGapS7 only)")
     ap.add_argument("--settings", nargs="+", default=None, choices=list(SETTINGS),
                     help="only these action settings (one not in DESIGN is added at eps 0.05)")
     ap.add_argument("--explore", nargs="+", type=float, default=None, help="only cells with these eps")
@@ -151,7 +165,7 @@ def main():
     args = ap.parse_args()
 
     os.chdir(ROOT)
-    envs = available_envs(args.envs)
+    envs = available_envs(args.envs or (ABLATION_ENVS if args.phase == "ablation" else ENVS))
     selection = None
     if args.phase == "confirm":
         sel_path = Path(args.selection or Path(args.out) / "tune" / "selection.json")

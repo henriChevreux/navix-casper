@@ -113,6 +113,16 @@ python scripts/frontier.py confirm               # paired Wilcoxon + Holm correc
 
 `frontier.py tune` also reports, per λ, how many cells it satisfies, so you can see whether a single penalty strength works everywhere or needs choosing per environment (CASPER uses one fixed setting throughout).
 
+**Follow-up ablation (exploratory: chosen after seeing the confirm results).** On the confirm seeds (100–131, so it's paired with confirm), LavaGapS7 only:
+
+- casper with restoration λ = 0, to separate the layer's gradient from the restoration loss;
+- penalty λ ∈ {0.15, 0.2}, to compare with casper at matched violation.
+
+```bash
+python scripts/sweep.py ablation --gpus 0,1,2    # 9 jobs, ~5 min on 3 GPUs
+python scripts/frontier.py ablation              # → results/ablation/ablation.md, frontier.png
+```
+
 Useful flags:
 
 - `--dry-run` lists the jobs without running them.

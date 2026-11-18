@@ -2,6 +2,7 @@
 
     python scripts/frontier.py tune       # after `sweep.py tune`: tables, plots, selection.json
     python scripts/frontier.py confirm    # after `sweep.py confirm`: paired tests on fresh seeds
+    python scripts/frontier.py ablation   # after `sweep.py ablation`: restoration ablation, matched penalty
 
 The two metrics (per seed, from the final evaluation):
   success    task success with the layer on (eval_shield/success_rate)
@@ -293,14 +294,84 @@ def confirm(args):
     plot(data, stats_by_cell, chosen_by_cell, root / "frontier.png", "Fresh seeds: selected configurations")
 
 
+ABLATION_PAIRS = [  # (a, b, question)
+    ("casper_g0_l0", "mask", "layer gradient alone vs mask"),
+    ("casper_g0_l1", "casper_g0_l0", "what restoration adds"),
+    ("casper_g0_l1", "pen0.15", "casper vs penalty 0.15"),
+    ("casper_g0_l1", "pen0.2", "casper vs penalty 0.2"),
+]
+
+
+def paired(a, b, metric):
+    from scipy.stats import wilcoxon
+    common = np.intersect1d(a["seeds"], b["seeds"])
+    d = a[metric][np.isin(a["seeds"], common)] - b[metric][np.isin(b["seeds"], common)]
+    ok = np.isfinite(d)
+    p = wilcoxon(d[ok]).pvalue if ok.sum() >= 5 and np.any(d[ok] != 0) else np.nan
+    return float(np.nanmean(d)) if ok.any() else np.nan, p, int(ok.sum())
+
+
+def ablation(args):
+    """Exploratory follow-up on the confirm seeds: merges results/confirm and results/ablation."""
+    conf, abl = load_phase(Path(args.out) / "confirm"), load_phase(Path(args.out) / "ablation")
+    if not abl:
+        raise SystemExit(f"no results in {Path(args.out) / 'ablation'}")
+    root = Path(args.out) / "ablation"
+    data = {cell: {**conf.get(cell, {}), **abl[cell]} for cell in abl}
+    rows = []
+    for cell in sorted(data):
+        for a, b, q in ABLATION_PAIRS:
+            if a in data[cell] and b in data[cell]:
+                for metric in ("success", "viol"):
+                    rows.append([cell, a, b, q, metric, *paired(data[cell][a], data[cell][b], metric)])
+    adj = np.full(len(rows), np.nan)
+    for a, b, _ in ABLATION_PAIRS:
+        for metric in ("success", "viol"):
+            idx = [i for i, r in enumerate(rows) if r[1] == a and r[2] == b and r[4] == metric]
+            if idx:
+                adj[idx] = holm([rows[i][6] for i in idx])
+    lines = [f"# Ablation (exploratory, chosen after the confirm results; seeds = confirm seeds)", "",
+             "Paired Wilcoxon a − b, Holm-corrected across cells per (pair, metric). Violation: lower is better.", ""]
+    for a, b, q in ABLATION_PAIRS:
+        sel = [(i, r) for i, r in enumerate(rows) if r[1] == a and r[2] == b]
+        if not sel:
+            continue
+        lines += [f"## {a} − {b} ({q})", "", "| cell | metric | mean diff | n | p | p (Holm) |", "|---|---|---|---|---|---|"]
+        lines += [f"| {r[0]} | {r[4]} | {r[5]:+.3f} | {r[7]} | {r[6]:.3g} | {adj[i]:.3g} |" for i, r in sel]
+        lines.append("")
+    stats_by_cell = {cell: {m: summary(r) for m, r in runs.items()} for cell, runs in data.items()}
+    lines += ["## All methods on the confirm seeds", "",
+              "| cell | method | success | violation | failed/solved | vacuous |", "|---|---|---|---|---|---|"]
+    for cell in sorted(stats_by_cell):
+        for m, st in sorted(stats_by_cell[cell].items(), key=lambda kv: (FAMILIES.index(family(kv[0])), kv[0])):
+            lines.append(f"| {cell} | {m} | {fmt(st)} |")
+    lines += ["", "## Penalty at matched violation", "",
+              "Per cell: the penalty config whose violation is closest to casper's (λ_rest = 1), and the success gap.", "",
+              "| cell | casper success / viol | closest penalty | its success / viol | success gap (casper − pen) |",
+              "|---|---|---|---|---|"]
+    for cell, st in sorted(stats_by_cell.items()):
+        c = st.get("casper_g0_l1")
+        pens = {m: v for m, v in st.items() if family(m) == "mask_pen" and np.isfinite(v["viol"])}
+        if c is None or not pens or not np.isfinite(c["viol"]):
+            continue
+        m = min(pens, key=lambda m: abs(pens[m]["viol"] - c["viol"]))
+        lines.append(f"| {cell} | {c['success']:.3f} / {c['viol']:.3f} | {m} | "
+                     f"{pens[m]['success']:.3f} / {pens[m]['viol']:.3f} | {c['success'] - pens[m]['success']:+.3f} |")
+    text = "\n".join(lines)
+    (root / "ablation.md").write_text(text + "\n")
+    print(text)
+    print(f"\nwritten {root / 'ablation.md'}")
+    plot(data, stats_by_cell, {}, root / "frontier.png", "Confirm seeds: all methods incl. ablation")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("phase", choices=["tune", "confirm"])
+    ap.add_argument("phase", choices=["tune", "confirm", "ablation"])
     ap.add_argument("--out", default="results")
     ap.add_argument("--tau", type=float, default=0.05, help="violation threshold of the selection rule")
     ap.add_argument("--alpha", type=float, default=0.05)
     args = ap.parse_args()
-    (tune if args.phase == "tune" else confirm)(args)
+    dict(tune=tune, confirm=confirm, ablation=ablation)[args.phase](args)
 
 
 if __name__ == "__main__":
