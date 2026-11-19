@@ -4,8 +4,7 @@ navix>=0.7
 flax>=0.8
 optax>=0.2
 numpy
-scipy        # paired Wilcoxon tests in scripts/summarize.py
-matplotlib   # curves.png
+matplotlib   # scripts/report.py
 pytest
 # Optional (~2 GB): only for the test that checks CASPER-k against the PyTorch reference;
 # without it that test is skipped.   pip install torch --index-url https://download.pytorch.org/whl/cpu

@@ -1,0 +1,292 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,booktabs,microtype}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{array}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black]{hyperref}
+
+% --- project macros (casper_k_macros.tex) ---
+\providecommand{\casper}{\textnormal{\textsc{Casper}}}
+\providecommand{\R}{\mathbb{R}}
+\DeclareMathOperator{\Topk}{top}\renewcommand{\Topk}{\operatorname{top}_k}
+\newcommand{\topkS}{\operatorname{top}_k^S}
+\DeclareMathOperator{\supp}{supp}
+% --- local ---
+\newcommand{\yh}{\hat y}
+\newcommand{\zt}{\tilde z}
+\newcommand{\zm}{z^{\mathrm{mask}}}
+\newcommand{\Sb}{\bar S}
+\newcommand{\1}{\mathbf 1}
+\newcommand{\Ck}{\mathcal C_k^{\epsilon}}
+\newcommand{\Rc}{R_{\casper}}
+\newcommand{\Rm}{R_{\mathrm{mask}}}
+\newcommand{\Ent}{\mathrm{H}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}[proposition]{Lemma}
+\newtheorem{corollary}[proposition]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[proposition]{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}[proposition]{Remark}
+
+\title{Why $\casper_k$'s restoration is a better-aimed training signal\\ than a forbidden-mass penalty}
+\author{CASPER-$k$ project notes}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Masking a policy's output distribution guarantees compliant actions but passes no gradient to the
+forbidden actions, so the network never learns the constraint. Two training signals restore one:
+a \emph{penalty} on the forbidden probability mass, and $\casper_k$'s \emph{restoration} term, the
+squared distance to the $\casper_k$ projection. We show that (i) restoration vanishes, together with
+its gradient, exactly on the set of $\epsilon$-separated $k$-compliant distributions, while the
+penalty vanishes nowhere; consequently (ii) every compliant task-optimum remains stationary under
+restoration for any weight, and under the penalty for no positive weight; (iii) the penalty step
+provably lowers the entropy of the executed (masked) policy at every state where a forbidden action
+has mass; and (iv) restoration's gradient is supported on the actions that compete for the top-$k$
+slots and preserves mass. The same properties predict when the advantage should disappear: for
+restoration towards the masked distribution, and for $\casper_k$'s face projection when $|S|<k$.
+Both predictions match the NAVIX experiments.
+\end{abstract}
+
+\section{Setting}
+\label{sec:setting}
+
+Consider one categorical decision with $h$ values, logits $\ell\in\R^h$ and output
+$\yh=\operatorname{softmax}(\ell)\in\Delta^\circ$, the open simplex. Let $S\subseteq[h]$ be the
+allowed set, $\Sb=[h]\setminus S\neq\emptyset$, and
+\[
+F(\yh)=\sum_{j\in\Sb}\yh_j\in(0,1),\qquad P_S=1-F .
+\]
+In RL, $\yh=\yh_\theta(\cdot\mid s)$ and $S=S(s)$ depend on the state; in states with $S=[h]$ all
+regularisers below are identically zero.
+
+\paragraph{Masking.} The masked distribution and its top-$k$ sampler are
+\[
+\zm_a=\frac{\yh_a\,\1[a\in S]}{P_S},\qquad
+T^\star=\topkS(\yh),\qquad
+q^{\mathrm{mask}}_a=\frac{\zm_a\,\1[a\in T^\star]}{\sum_{b\in T^\star}\zm_b}.
+\]
+
+\begin{lemma}[Masking discards the forbidden logits]\label{lem:mask}
+For every $a\in S$ and $j\in\Sb$, $\partial\log\zm_a/\partial\ell_j=0$ and
+$\partial\log q^{\mathrm{mask}}_a/\partial\ell_j=0$. Hence any loss that depends on $\yh$ only
+through $\zm$ or $q^{\mathrm{mask}}$ (in particular the policy-gradient loss of a masked policy) has
+zero gradient with respect to every forbidden logit.
+\end{lemma}
+\begin{proof}
+$\log\zm_a=\ell_a-\log\sum_{b\in S}e^{\ell_b}$ contains no $\ell_j$ with $j\in\Sb$; the same holds
+for $\log q^{\mathrm{mask}}_a=\ell_a-\log\sum_{b\in T^\star}e^{\ell_b}$, since $T^\star\subseteq S$
+is determined by the ranking of the allowed logits only.
+\end{proof}
+
+\paragraph{The two training signals.} With task loss $\mathcal L_{\mathrm{task}}$, we compare
+\begin{align}
+\mathcal J_{\mathrm{pen}}&=\mathcal L_{\mathrm{task}}+\lambda\,\mathbb E_s\bigl[F(\yh)\bigr],
+\label{eq:pen}\\
+\mathcal J_{\casper}&=\mathcal L_{\mathrm{task}}+\lambda_r\,\mathbb E_s\bigl[\Rc(\yh)\bigr],
+\qquad \Rc(\yh)=\tfrac12\bigl\|\zt(\yh)-\yh\bigr\|_2^2,
+\label{eq:casper}
+\end{align}
+where $\zt$ is the $\casper_k$ surrogate projection ($\gamma=0$). As a control we also consider
+restoration towards the masked distribution, $\Rm(\yh)=\tfrac12\|\zm-\yh\|_2^2$.
+
+\paragraph{The $\casper_k$ projection (recalled).} Let $|S|\ge k$, $T=T^\star$,
+$m_T=\min_{t\in T}\yh_t$, $M_T=\max_{j\notin T}\yh_j$, and $e=\min(\epsilon,m_T)$. With
+\[
+L=\{t\in T:\yh_t\le M_T+e\},\qquad H=\{j\notin T:\yh_j\ge m_T-e\},\qquad B=L\cup H,
+\]
+\[
+u=\frac{1}{|B|}\Bigl(\sum_{b\in B}\yh_b+|H|\,e\Bigr),\qquad
+\zt_L=u,\quad \zt_H=u-e,\quad \zt_i=\yh_i\ (i\notin B),
+\]
+and $\zt=\yh$ if $L=\emptyset$. The surrogate guarantees
+$\min_{t\in T}\zt_t\ge\max_{j\notin T}\zt_j+e$ (Theorem~\emph{Satisfaction}, Sec.~3.1), so
+$\Topk(\zt)=T\subseteq S$. If $|S|<k$, $\zt$ is the face projection: $\zt_a=\yh_a+F/|S|$ for
+$a\in S$ and $\zt_j=0$ for $j\in\Sb$.
+
+\begin{definition}[$k$-compliance]
+$\yh$ is \emph{$k$-compliant} if $\Topk(\yh)\subseteq S$. It is \emph{$\epsilon$-separated
+$k$-compliant}, written $\yh\in\Ck$, if $|S|\ge k$ and $m_T>M_T+e$: the raw top-$k$ set is exactly
+the $k$ best allowed values, separated from all others by more than $e$. Clearly $\Ck$ is contained
+in the $k$-compliant set, and differs from it only by a margin of width $e\le\epsilon$.
+\end{definition}
+
+\section{Zero sets: restoration switches off, the penalty never does}
+
+\begin{proposition}[Restoration vanishes exactly on the target set]\label{prop:zero}
+Let $|S|\ge k$ and $\epsilon>0$.
+\begin{enumerate}
+\item[(i)] If $\yh\in\Ck$ then $\zt=\yh$ on a neighbourhood of $\yh$; hence $\Rc=0$ and
+$\nabla_\ell\Rc=0$ there.
+\item[(ii)] If $\yh$ is not $k$-compliant then $\Rc(\yh)>0$.
+\end{enumerate}
+\end{proposition}
+\begin{proof}
+(i) $m_T>M_T+e$ means $L=\emptyset$, and the strict inequality persists under small perturbations
+of $\yh$ (the order statistics and $e$ are continuous, and $T$ is locally constant when the
+allowed values are ranked strictly, which holds generically; with ties use the deterministic
+tie-breaking rule). So $\zt\equiv\yh$ locally and $\Rc\equiv0$ locally.
+(ii) If some $j\in\Sb$ lies in $\Topk(\yh)$, then some $t\in T$ lies outside $\Topk(\yh)$, so
+$\yh_t\le\yh_j\le M_T$ and $m_T\le M_T$. The output instead satisfies
+$\min_T\zt\ge\max_{\notin T}\zt+e>\max_{\notin T}\zt$, so $\zt\neq\yh$.
+\end{proof}
+
+\begin{proposition}[The penalty and masked restoration vanish nowhere]\label{prop:never}
+For every $\yh\in\Delta^\circ$:
+\begin{enumerate}
+\item[(i)] $\displaystyle\frac{\partial F}{\partial\ell_i}=\yh_i\bigl(\1[i\in\Sb]-F\bigr)$; in
+particular $\partial F/\partial\ell_j=\yh_jP_S>0$ for $j\in\Sb$, so $\nabla_\ell F\neq0$, and
+$\inf F=0$ is not attained.
+\item[(ii)] Writing $\yh_j=F w_j$ for $j\in\Sb$ (so $w\in\Delta(\Sb)$),
+$\Rm(\yh)=\tfrac12F^2\bigl(\|w\|^2+\|\zm\|^2\bigr)>0$, and lowering all forbidden logits by a common
+amount decreases $\Rm$ strictly; hence $\nabla_\ell\Rm\neq0$.
+\item[(iii)] If $|S|<k$, $\Rc(\yh)=\tfrac12\bigl(\sum_{j\in\Sb}\yh_j^2+F^2/|S|\bigr)>0$:
+$\casper_k$'s face projection has the same (empty) zero set in $\Delta^\circ$.
+\end{enumerate}
+\end{proposition}
+\begin{proof}
+(i) $\partial\yh_m/\partial\ell_i=\yh_m(\1[m=i]-\yh_i)$; sum over $m\in\Sb$.
+(ii) $\zm_j-\yh_j=-Fw_j$ for $j\in\Sb$ and $\zm_a-\yh_a=\zm_a-(1-F)\zm_a=F\zm_a$ for $a\in S$. A
+common shift $\ell_j\mapsto\ell_j-c$ ($j\in\Sb$) keeps $w$ and $\zm$ fixed and strictly decreases
+$F$, hence $\Rm$; so the directional derivative of $\Rm$ along this direction is negative.
+(iii) Direct substitution of the face projection.
+\end{proof}
+
+\begin{remark}
+$\Rc$ targets $k$-compliance, the property that matters when the policy samples from its top-$k$
+set with the shield removed. $F$ and $\Rm$ target $F=0$, which is stricter (it also suppresses
+forbidden values far below the top-$k$ set, which can never be sampled) and unattainable with finite
+logits.
+\end{remark}
+
+\section{Consequences for the optimisation}
+
+\begin{corollary}[No bias at compliant optima]\label{cor:stationary}
+Consider a tabular (logit) parametrisation $\theta=\{\ell(s)\}_s$ and a state distribution with
+positive mass on some state with $S(s)\neq[h]$. Let $\theta^\star$ be a stationary point of
+$\mathcal L_{\mathrm{task}}$ such that $\yh_{\theta^\star}(s)\in\Ck$ for every state with
+$|S(s)|\ge k$ and $S(s)\neq[h]$. Then:
+\begin{enumerate}
+\item[(i)] if every constrained state has $|S(s)|\ge k$, $\theta^\star$ is a stationary point of
+$\mathcal J_{\casper}$ for every $\lambda_r\ge0$;
+\item[(ii)] $\theta^\star$ is a stationary point of $\mathcal J_{\mathrm{pen}}$ for no $\lambda>0$,
+and of $\lambda_r\,\mathbb E_s[\Rm]$-regularised training for no $\lambda_r>0$.
+\end{enumerate}
+\end{corollary}
+\begin{proof}
+(i) By Proposition~\ref{prop:zero}(i), $\nabla_{\ell(s)}\Rc=0$ at every constrained state, and
+$\Rc\equiv0$ at unconstrained ones. (ii) In the tabular case $\nabla_{\ell(s)}\mathcal J_{\mathrm{pen}}
+=\nabla_{\ell(s)}\mathcal L_{\mathrm{task}}+\lambda\,\rho(s)\nabla_\ell F=\lambda\,\rho(s)\nabla_\ell F
+\neq0$ by Proposition~\ref{prop:never}(i), where $\rho(s)>0$ is the state weight; likewise for $\Rm$
+by Proposition~\ref{prop:never}(ii).
+\end{proof}
+
+Since masking makes $\mathcal L_{\mathrm{task}}$ invariant to the forbidden logits
+(Lemma~\ref{lem:mask}), compliant task-optima exist whenever masked task-optima do: lower the
+forbidden logits below the $k$-th allowed one. Corollary~\ref{cor:stationary} says $\casper_k$'s
+restoration keeps those optima, at any weight, while the penalty moves every solution by an amount
+that grows with $\lambda$. This is the source of the penalty's success--compliance trade-off curve.
+
+\begin{proposition}[The penalty sharpens the executed policy]\label{prop:sharpen}
+Let $\ell'=\ell-\eta\lambda\nabla_\ell F$. For $a\in S$, to first order in $\eta$,
+\[
+\log\zm_a(\ell')-\log\zm_a(\ell)=\eta\lambda\,F(1-F)\Bigl(\zm_a-\sum_{b\in S}(\zm_b)^2\Bigr),
+\]
+and the entropy of the masked policy changes by
+\[
+\Delta\Ent(\zm)=-\eta\lambda\,F(1-F)\operatorname{Cov}_{a\sim\zm}\bigl(\log\zm_a,\ \zm_a\bigr)\ \le\ 0,
+\]
+with equality iff $\zm$ is uniform on $S$. The same holds for the executed top-$k$ policy
+$q^{\mathrm{mask}}$, with $S$ replaced by $T^\star$ and $F(1-F)$ by $F\sum_{b\in T^\star}\yh_b$.
+\end{proposition}
+\begin{proof}
+By Proposition~\ref{prop:never}(i), $\Delta\ell_a=\eta\lambda F\yh_a=\eta\lambda F(1-F)\zm_a$ for
+$a\in S$. Since $\log\zm_a=\ell_a-\log\sum_{b\in S}e^{\ell_b}$,
+$\Delta\log\zm_a=\Delta\ell_a-\sum_b\zm_b\Delta\ell_b$, which gives the first claim. For the entropy,
+$\Delta\Ent=-\sum_a\zm_a\log\zm_a\,\Delta\log\zm_a$ (the term $\sum_a\zm_a\Delta\log\zm_a$ vanishes),
+which equals the stated covariance. $\log z$ and $z$ are comonotone, so the covariance is
+non-negative by Chebyshev's sum inequality, and zero iff $\zm$ is constant on $S$.
+\end{proof}
+
+The penalty therefore keeps pushing the executed policy towards determinism at every state where a
+forbidden value has mass, and $F>0$ always (Proposition~\ref{prop:never}). This is a
+premature-commitment pressure, consistent with the extra locked-in seeds and lower task success of
+the penalty in the experiments.
+
+\begin{proposition}[Restoration is local and mass-preserving]\label{prop:local}
+Let $|S|\ge k$ and assume $e=\epsilon$ (i.e.\ $\epsilon\le m_T$, so $e$ is locally constant). Then
+\[
+\nabla_{\yh}\Rc=\yh-\zt\quad\text{on }B,\qquad \nabla_{\yh}\Rc=0\quad\text{off }B,\qquad
+\sum_{b\in B}(\yh_b-\zt_b)=0 .
+\]
+A descent step moves $\yh_L$ up towards $u$ and $\yh_H$ down towards $u-\epsilon$, and changes
+nothing else.
+\end{proposition}
+\begin{proof}
+Let $J=\partial\zt/\partial\yh$. For $i\notin B$, $\zt_i=\yh_i$ and $u$ does not depend on $\yh_i$, so
+$J_{mi}=\1[m=i]$ and $((I-J)^\top(\yh-\zt))_i=0$. On $B$, $J_{B,B}=\frac1{|B|}\mathbf 1\mathbf
+1^\top$, so $((I-J)^\top(\yh-\zt))_B=(\yh-\zt)_B-\overline{(\yh-\zt)_B}\,\mathbf 1$. Finally
+$\sum_B\zt=|L|u+|H|(u-\epsilon)=|B|u-|H|\epsilon=\sum_B\yh$, so the mean vanishes, and
+$\nabla_{\yh}\Rc=(I-J)^\top(\yh-\zt)=\yh-\zt$ on $B$.
+\end{proof}
+
+Comparing Propositions~\ref{prop:never}(i) and~\ref{prop:local}: the penalty's gradient touches every
+value in proportion to its probability and never switches off; restoration's touches only the
+forbidden values that compete for a top-$k$ slot ($H$) and the weakest top-$k$ allowed values ($L$),
+moves mass only among them, and vanishes once $\yh\in\Ck$. While it is active, it raises the weakest
+members of $T$, which flattens rather than sharpens the executed policy inside $T$.
+
+\section{Predictions and empirical check}
+
+The analysis predicts not only that $\casper_k$'s restoration should beat the penalty, but also when
+the difference should disappear: whenever the target has no switch-off region.
+Table~\ref{tab:check} compares the predictions with the NAVIX experiments (PPO with top-$k$ sampling;
+every regulariser's weight tuned over three values with the same pre-declared rule; fresh-seed
+confirmation, 32 seeds).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{4.4cm}>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{6.3cm}@{}}
+\toprule
+Regulariser / regime & Zero set in $\Delta^\circ$ & Observed (task success / violation)\\
+\midrule
+$\Rc$, $|S|\ge k$ ($k=2$) & $\Ck$ (switches off) &
+Dyn.-Obstacles: $1.00/0.08$ and $0.81/0.06$; best trade-off curve in every setting\\
+$F$ (penalty), $k=2$ & empty & Dyn.-Obstacles: $0.44/0.22$ (both settings); success falls
+monotonically with $\lambda$\\
+$\Rm$ (masked target), $k=2$ & empty & frozen agents (success $0$ on Dyn.-Obstacles, $\le0.05$ on
+LavaGap) at the selected weight; $\approx0.3$ less success than $\Rc$ at matched violation\\
+$\Rc$ with $|S|<k$ ($k=3$, face) & empty (Prop.~\ref{prop:never}(iii)) & identical to $\Rm$:
+violation $0.018/0.021/0.022$ for $\Rc/\Rm/$mask${}+\Rc$, success $1.00$ for all\\
+\bottomrule
+\end{tabular}
+\caption{The zero-set property separates the regularisers exactly where the experiments do.}
+\label{tab:check}
+\end{table}
+
+All formulas in Propositions~\ref{prop:zero}--\ref{prop:local} were checked numerically against
+the implementation (\texttt{ncasper/\allowbreak shields.py}), on 2{,}000--3{,}000 random states
+each in float64:
+the gradient of $F$ and the first-order change of $\log\zm$ match to $\le3\times10^{-16}$;
+$\nabla\Rc$ is exactly $0$ on $\Ck$ and nonzero on every non-compliant state; and $\nabla_{\yh}\Rc$
+equals $\yh-\zt$ to $1.1\times10^{-16}$ and vanishes off $B$.
+
+\section{Scope}
+
+The results are statements about the geometry of the regularisers (zero sets, stationary points,
+first-order effects on the executed policy). They explain why the penalty trades task success for
+compliance and why $\casper_k$'s restoration need not, and they predict where the two coincide.
+They do not by themselves guarantee better final performance in reinforcement learning, which also
+depends on exploration, non-convexity and parameter sharing (Corollary~\ref{cor:stationary} is stated
+for the tabular parametrisation; with a shared network, the penalty's gradient is generically not
+annihilated by the parameter Jacobian, but this is not guaranteed). Proposition~\ref{prop:local}
+assumes $e=\epsilon$; when $m_T<\epsilon$ the margin depends on $m_T$ and an extra term appears on
+$\argmin_T\yh$.
+
+\end{document}

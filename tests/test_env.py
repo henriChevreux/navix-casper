@@ -13,7 +13,7 @@ def test_lava_ahead_matches_forward_move():
             break
     else:
         raise AssertionError("no start facing lava in 50 seeds")
-    S = allowed_actions(ts.state, 3)
+    S = allowed_actions(ts.state)
     assert not bool(S[FORWARD]) and bool(S[0]) and bool(S[1])
     # stepping forward into lava terminates with no reward
     nts = env.step(ts, jnp.asarray(FORWARD))
@@ -31,11 +31,6 @@ def test_autoreset_returns_fresh_episode():
     assert int(nts.t) == 0  # already the first timestep of the next episode
 
 
-def test_full_action_set():
-    env = make_env("Navix-LavaGapS7-v0", full_action_set=True)
-    assert int(env.action_space.maximum) + 1 == 7
-
-
 # ---- Dynamic-Obstacles: moving balls, collision only via the forbidden action ----
 DO = "Navix-Dynamic-Obstacles-6x6-v0"
 
@@ -47,7 +42,7 @@ def _rollout(env, policy, key, n=400):
     def body(carry, k):
         ts = carry
         k1, k2 = jax.random.split(k)
-        S = allowed_actions(ts.state, 3)
+        S = allowed_actions(ts.state)
         a = policy(k1, S)
         nts, r, d, _, _ = step_autoreset(env, ts, a, k2)
         return nts, (ball_ahead(ts.state), S, a, r, d)
@@ -81,8 +76,3 @@ def test_obstacle_shielded_policy_never_collides():
     assert not bool((r < 0).any())
     assert not bool((ahead & (a == FORWARD)).any())
 
-
-def test_obstacle_env_rejects_full_action_set():
-    import pytest
-    with pytest.raises(ValueError):
-        make_env(DO, full_action_set=True)
