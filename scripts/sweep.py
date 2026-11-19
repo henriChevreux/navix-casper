@@ -1,8 +1,9 @@
 """The CASPER-k vs masking + penalty comparison: a hyperparameter grid, run in two phases.
 
-Phase 1, tune (seeds 0..15 by default): the penalty (3 lambdas) and CASPER (3 restoration
-weights) are tuned with the same budget and the same selection rule, per cell. none and mask
-have nothing to tune and run in confirm only. Confirm also always runs CASPER's default
+Phase 1, tune (seeds 0..15 by default): the penalty (3 lambdas), CASPER (3 restoration
+weights) and mask + restoration (the same 3 weights, mask's projection as target) are tuned
+with the same budget and the same selection rule, per cell. none, mask and CASPER with
+restoration off have nothing to tune and run in confirm only. Confirm also always runs CASPER's default
 (restoration 1), for the "untuned CASPER vs tuned penalty" verdict.
   python scripts/sweep.py tune --gpus 0,1,2
 
@@ -62,7 +63,12 @@ DESIGN = [("a3k2", 0.05), ("a3k2", 0.15), ("a3k3", 0.05)]
 PEN_LAMBDAS = [0.01, 0.1, 0.3]  # spans "too weak" to "task collapses" on DistShift
 # CASPER is tuned with the same budget as the penalty: 3 values of the restoration weight (gamma = 0).
 CASPER_GRID = [(0.0, 0.3), (0.0, 1.0), (0.0, 3.0)]  # (gamma, restoration lambda)
-UNTUNED = ("none", "mask")  # nothing to tune: confirm phase only
+# Control for "is it CASPER's projection or just the restoration loss?": the same restoration
+# loss lambda/2 ||z - p||^2 and the same weights, but with mask's projection z = mask(p) as target.
+MASKREST_GRID = [0.3, 1.0, 3.0]
+# Nothing to tune, confirm phase only: none, mask, and CASPER with restoration off (the
+# projection's gradient alone).
+UNTUNED = ("none", "mask", "casper_g0_l0")
 CASPER_DEFAULT = "casper_g0_l1"  # always confirmed too, for the "untuned CASPER" verdict
 PHASES = {"tune": (0, 16), "confirm": (100, 32), "ablation": (100, 32)}  # seed offset, number of seeds
 # Follow-up, chosen after the confirm results (exploratory, same seeds as confirm so it's paired):
@@ -82,6 +88,8 @@ def methods(phase="confirm"):
     out += [(f"pen{l:g}", "mask_pen", ["--penalty-lambda", str(l)]) for l in PEN_LAMBDAS]
     out += [(f"casper_g{g:g}_l{l:g}", "casper", ["--casper-gamma", str(g), "--casper-lambda", str(l)])
             for g, l in CASPER_GRID]
+    out += [(f"maskrest_l{l:g}", "mask_rest", ["--casper-lambda", str(l)]) for l in MASKREST_GRID]
+    out += [("casper_g0_l0", "casper", ["--casper-gamma", "0.0", "--casper-lambda", "0.0"])]
     return out
 
 

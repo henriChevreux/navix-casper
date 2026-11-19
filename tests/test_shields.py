@@ -87,3 +87,23 @@ def test_mask_pen_is_mask_at_execution_and_penalty_lowers_forbidden():
     allowed = jnp.array([True, True, False])
     g = jax.grad(lambda l: jnp.where(allowed, 0.0, jax.nn.softmax(l)).sum())(lg)
     assert g[2] > 0 and g[0] < 0 and g[1] < 0  # descent lowers the forbidden logit
+
+
+def test_mask_rest_is_mask_at_execution_and_restoration_lowers_forbidden():
+    logits, S = _batch(seed=8)
+    a = apply_shield(logits, S, "mask", 2)
+    b = apply_shield(logits, S, "mask_rest", 2)
+    for x, y in zip(a, b):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+    lg = jnp.array([1.0, 0.5, 3.0])
+    allowed = jnp.array([True, True, False])
+
+    def rest(l):  # same as ppo.py: 0.5 ||z - p||^2 with z = mask(p), gradient through both
+        p, z, _, _ = apply_shield(l[None], allowed[None], "mask_rest", 2)
+        return 0.5 * ((z - p) ** 2).sum()
+
+    g = jax.grad(rest)(lg)
+    assert g[2] > 0  # descent lowers the forbidden logit
+    # z = p (restoration 0) once nothing is forbidden
+    p, z, _, _ = apply_shield(lg[None], jnp.ones((1, 3), bool), "mask_rest", 2)
+    np.testing.assert_allclose(np.asarray(z), np.asarray(p), atol=1e-7)
