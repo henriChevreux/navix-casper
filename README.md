@@ -89,7 +89,7 @@ Everything stays in probability space. Cells are map × (action setting, explora
 
 | Grid axis | Values |
 |---|---|
-| maps | LavaGapS7, DistShift1, LavaCrossingS9N1 (the last needs NAVIX ≥ 0.8, i.e. Python ≥ 3.12; it's skipped otherwise) |
+| maps | LavaGapS7, DistShift1, LavaCrossingS9N1 (the last needs NAVIX ≥ 0.8, i.e. Python ≥ 3.12; it's skipped otherwise), Dynamic-Obstacles-6x6 (3 actions only) |
 | (setting, ε) | `a3k2` ε = .05 and .15, `a3k3` ε = .05 (3 actions, k = 2 / 3, 5M). ε = .15 tests whether CASPER's k = 2 advantage is just exploration. `--settings a3k2 a3k3 a7k2` adds 7 actions / 20M; `--full-grid` runs every combination. |
 | tuned (tune phase) | mask_pen λ ∈ {0.01, 0.1, 0.3}, selected per cell |
 | fixed (confirm only) | none, mask, casper (γ = 0, restoration λ = 1). CASPER isn't tuned, which can only favour the penalty. |
@@ -131,6 +131,25 @@ Useful flags:
 - `--budget-scale 0.003 --n-seeds 6` gives a quick smoke test.
 
 Each job's log goes to `results/<phase>/logs/`.
+
+## Dynamic-Obstacles
+
+`Navix-Dynamic-Obstacles-{5x5,6x6,8x8,16x16}-v0`: balls take a random step after every agent action, so "forward is forbidden" switches on and off from step to step, while forward stays the main useful action. That makes it the worst case for a blanket penalty on forbidden probability. Prediction: the penalty's task-success cost is larger here than on LavaGap, and CASPER's stays small.
+
+NAVIX versions disagree on collisions (0.7.7: walking into a ball is only blocked, and a ball moving onto you ends the episode; 4.0: both end it). `ncasper/env.py` fixes MiniGrid's semantics on every version:
+
+- moving forward into a ball ends the episode with −1;
+- a ball never moves onto the agent;
+- the goal gives +1.
+
+So a collision can only come from the forbidden action, like terminal lava. The `lava/ep` and `lava_rate` metrics count collisions here. Only the 3-action set is supported.
+
+```bash
+python scripts/sweep.py tune --gpus 0,1,2 --envs Navix-Dynamic-Obstacles-6x6-v0      # 9 jobs
+python scripts/frontier.py tune
+python scripts/sweep.py confirm --gpus 0,1,2 --envs Navix-Dynamic-Obstacles-6x6-v0   # 12 jobs
+python scripts/frontier.py confirm
+```
 
 ## Things to know
 

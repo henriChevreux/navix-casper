@@ -45,7 +45,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-ENVS = ["Navix-LavaGapS7-v0", "Navix-DistShift1-v0", "Navix-LavaCrossingS9N1-v0"]
+ENVS = ["Navix-LavaGapS7-v0", "Navix-DistShift1-v0", "Navix-LavaCrossingS9N1-v0", "Navix-Dynamic-Obstacles-6x6-v0"]
 SETTINGS = {  # name: (full_action_set, k, budget)
     "a3k2": (False, 2, 5_000_000),
     "a3k3": (False, 3, 5_000_000),
@@ -103,6 +103,9 @@ def build_jobs(phase, envs, cells, out, selection=None, budget_scale=1.0, n_seed
     for env, (setting, eps) in itertools.product(envs, cells):
         cell = cell_name(env, setting, eps)
         full, k, budget = SETTINGS[setting]
+        if full and "Dynamic-Obstacles" in env:
+            print(f"! skipping {cell}: Dynamic-Obstacles supports only the 3-action set", flush=True)
+            continue
         budget = int(budget * budget_scale)
         chosen = None
         if phase == "confirm":
