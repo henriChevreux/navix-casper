@@ -91,8 +91,8 @@ Everything stays in probability space. Cells are map × (action setting, explora
 |---|---|
 | maps | LavaGapS7, DistShift1, LavaCrossingS9N1 (the last needs NAVIX ≥ 0.8, i.e. Python ≥ 3.12; it's skipped otherwise), Dynamic-Obstacles-6x6 (3 actions only) |
 | (setting, ε) | `a3k2` ε = .05 and .15, `a3k3` ε = .05 (3 actions, k = 2 / 3, 5M). ε = .15 tests whether CASPER's k = 2 advantage is just exploration. `--settings a3k2 a3k3 a7k2` adds 7 actions / 20M; `--full-grid` runs every combination. |
-| tuned (tune phase) | mask_pen λ ∈ {0.01, 0.1, 0.3}, selected per cell |
-| fixed (confirm only) | none, mask, casper (γ = 0, restoration λ = 1). CASPER isn't tuned, which can only favour the penalty. |
+| tuned (tune phase), same budget and rule | mask_pen λ ∈ {0.01, 0.1, 0.3}; casper restoration λ_r ∈ {0.3, 1, 3} (γ = 0); each selected per cell |
+| fixed (confirm only) | none, mask; plus casper's default (λ_r = 1) for the untuned verdict |
 
 Each run gives two metrics:
 
@@ -108,10 +108,21 @@ python scripts/sweep.py confirm --gpus 0,1,2     # none, mask, casper + selected
 python scripts/frontier.py confirm               # paired Wilcoxon + Holm correction → results/confirm/verdict.md
 ```
 
-1. **Selection rule for the penalty λ, fixed in advance, per cell:** among configs with violation ≤ 0.05 and ≤ 25% vacuous seeds, take the highest success. If none qualifies, take the lowest violation.
+1. **Selection rule for the penalty λ and CASPER's λ_r, fixed in advance, per cell:** among configs with violation ≤ 0.05 and ≤ 25% vacuous seeds, take the highest success. If none qualifies, take the lowest violation.
 2. **Verdict per cell:** CASPER is *better* if it's significantly better on one metric and not significantly worse on the other; *worse* in the reverse case; otherwise it's a *tie / trade-off*.
 
-`frontier.py tune` also reports, per λ, how many cells it satisfies, so you can see whether a single penalty strength works everywhere or needs choosing per environment (CASPER uses one fixed setting throughout).
+`frontier.py tune` also reports, per setting, how many cells it satisfies, so you can see whether a single λ or λ_r works everywhere or needs choosing per environment.
+
+`frontier.py confirm` writes two verdicts:
+
+- `verdict.md`: tuned CASPER vs tuned penalty, the fair comparison;
+- `verdict_untuned.md`: CASPER's default (λ_r = 1) vs tuned penalty, the "does it need tuning?" comparison.
+
+`python scripts/plots.py` draws the figures into `results/figures/`:
+
+- Fig. 1: success vs. violation, with both methods as curves over their hyperparameter;
+- Fig. 2: per-seed outcomes;
+- Fig. 3: raw-policy violation during training.
 
 **Follow-up ablation (exploratory: chosen after seeing the confirm results).** On the confirm seeds (100–131, so it's paired with confirm), LavaGapS7 only:
 

@@ -1,8 +1,9 @@
 """The CASPER-k vs masking + penalty comparison: a hyperparameter grid, run in two phases.
 
-Phase 1, tune (seeds 0..15 by default): only the penalty is tuned (its lambdas, per cell).
-none, mask and casper run at fixed settings in confirm only. CASPER gets no tuning,
-which can only favour the penalty.
+Phase 1, tune (seeds 0..15 by default): the penalty (3 lambdas) and CASPER (3 restoration
+weights) are tuned with the same budget and the same selection rule, per cell. none and mask
+have nothing to tune and run in confirm only. Confirm also always runs CASPER's default
+(restoration 1), for the "untuned CASPER vs tuned penalty" verdict.
   python scripts/sweep.py tune --gpus 0,1,2
 
 Selection (no GPU): pick each method family's configuration per cell by a fixed rule.
@@ -59,8 +60,10 @@ EXPLORE = [0.05, 0.15]
 # Add it with --settings a3k2 a3k3 a7k2.
 DESIGN = [("a3k2", 0.05), ("a3k2", 0.15), ("a3k3", 0.05)]
 PEN_LAMBDAS = [0.01, 0.1, 0.3]  # spans "too weak" to "task collapses" on DistShift
-CASPER_GRID = [(0.0, 1.0)]  # (gamma, restoration lambda): the default, untuned
-UNTUNED = ("none", "mask", "casper_g0_l1")  # fixed settings: confirm phase only
+# CASPER is tuned with the same budget as the penalty: 3 values of the restoration weight (gamma = 0).
+CASPER_GRID = [(0.0, 0.3), (0.0, 1.0), (0.0, 3.0)]  # (gamma, restoration lambda)
+UNTUNED = ("none", "mask")  # nothing to tune: confirm phase only
+CASPER_DEFAULT = "casper_g0_l1"  # always confirmed too, for the "untuned CASPER" verdict
 PHASES = {"tune": (0, 16), "confirm": (100, 32), "ablation": (100, 32)}  # seed offset, number of seeds
 # Follow-up, chosen after the confirm results (exploratory, same seeds as confirm so it's paired):
 #   casper with restoration lambda = 0: is the gain the layer's gradient or the restoration loss?
@@ -113,7 +116,7 @@ def build_jobs(phase, envs, cells, out, selection=None, budget_scale=1.0, n_seed
             chosen = set(selection.get(cell, {}).values())
             if not chosen:
                 continue
-            chosen |= set(UNTUNED)
+            chosen |= set(UNTUNED) | {CASPER_DEFAULT}
         for name, shield, method_flags in methods(phase):
             if chosen is not None and name not in chosen:
                 continue
@@ -140,12 +143,13 @@ def gpu_memory(gpu):
         return None
 
 
-def wait_for_memory(gpu, need_mib, max_wait_s, poll_s=30):
-    """Block until the GPU has need_mib free (other users' jobs come and go). Returns (free, total) or None."""
+def wait_for_memory(gpu, need_mib, max_wait_s, poll_s=30, stop=lambda: False):
+    """Block until the GPU has need_mib free (other users' jobs come and go), or until stop() is true
+    (e.g. the other GPUs have taken all the jobs). Returns (free, total) or None."""
     t0, said = time.time(), False
     while True:
         mem = gpu_memory(gpu)
-        if mem is None or mem[0] >= need_mib or time.time() - t0 > max_wait_s:
+        if mem is None or mem[0] >= need_mib or time.time() - t0 > max_wait_s or stop():
             if said:
                 print(f"[gpu {gpu}] {'memory free again' if mem and mem[0] >= need_mib else 'stopped waiting'} "
                       f"after {time.time() - t0:.0f}s", flush=True)
@@ -179,16 +183,19 @@ def worker(gpu, q, logdir, lock, status, mem_gb=6.0, max_wait_min=120, max_attem
     memory. On a GPU memory error: retry with seeds run 8 at a time, waiting, up to max_attempts."""
     need = int(mem_gb * 1024)
     while True:
-        try:
-            job = q.get_nowait()
-        except queue.Empty:
+        if q.empty():
             return
-        attempt = job.get("attempt", 1)
         env = dict(os.environ, CUDA_DEVICE_ORDER="PCI_BUS_ID",  # same numbering as nvidia-smi
                    CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1")
-        log = Path(logdir) / (job["tag"].replace("/", "__") + ".log")
         with _gpu_locks[gpu]:
-            mem = wait_for_memory(gpu, need + HEADROOM_MIB, max_wait_min * 60)
+            # wait for memory *before* taking a job, so a full GPU doesn't sit on work a free one could do
+            mem = wait_for_memory(gpu, need + HEADROOM_MIB, max_wait_min * 60, stop=q.empty)
+            try:
+                job = q.get_nowait()
+            except queue.Empty:
+                return
+            attempt = job.get("attempt", 1)
+            log = Path(logdir) / (job["tag"].replace("/", "__") + ".log")
             if mem is not None:
                 env.update(XLA_PYTHON_CLIENT_PREALLOCATE="true",
                            XLA_PYTHON_CLIENT_MEM_FRACTION=f"{min(0.9, need / mem[1] + 0.005):.3f}")

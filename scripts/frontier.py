@@ -214,7 +214,9 @@ def tune(args):
     plot(data, stats_by_cell, selected, root / "frontier.png", "Tuning seeds: success vs layer-removed violation")
 
 
-def confirm(args):
+def confirm(args, casper=None, fname="verdict.md", make_plot=True):
+    """Paired verdict on the confirm seeds. casper=None uses CASPER's selected (tuned) config;
+    casper="casper_g0_l1" gives the untuned-default verdict."""
     from scipy.stats import wilcoxon
     tune_root, root = Path(args.out) / "tune", Path(args.out) / "confirm"
     selected = json.loads((tune_root / "selection.json").read_text())["selected"]
@@ -224,7 +226,9 @@ def confirm(args):
     rows = []  # (cell, other, metric, mean diff, p)
     stats_by_cell, chosen_by_cell = {}, {}
     for cell in sorted(data):
-        sel = dict(none="none", mask="mask", casper="casper_g0_l1", **selected.get(cell, {}))  # untuned: confirm only
+        sel = {"none": "none", "mask": "mask", "casper": "casper_g0_l1", **selected.get(cell, {})}
+        if casper:
+            sel["casper"] = casper
         runs = data[cell]
         stats_by_cell[cell] = {m: summary(r) for m, r in runs.items()}
         chosen_by_cell[cell] = {f: m for f, m in sel.items() if m in runs}
@@ -249,7 +253,8 @@ def confirm(args):
             idx = [i for i, r in enumerate(rows) if r[1] == other_fam and r[4] == metric]
             if idx:
                 adj[idx] = holm([rows[i][6] for i in idx])
-    lines = [f"# Confirmation phase ({root}): selected configs on fresh seeds", "",
+    which = f"CASPER fixed at {casper} (untuned default)" if casper else "CASPER = its selected (tuned) config"
+    lines = [f"# Confirmation phase ({root}): selected configs on fresh seeds — {which}", "",
              "Paired Wilcoxon, casper − other; Holm-corrected across cells per (comparison, metric).",
              f"Significance level {args.alpha}. Violation: lower is better.", ""]
     verdicts = defaultdict(list)
@@ -288,10 +293,11 @@ def confirm(args):
         for m, st in sorted(stats_by_cell[cell].items(), key=lambda kv: FAMILIES.index(family(kv[0]))):
             lines.append(f"| {cell} | {m} | {fmt(st)} |")
     text = "\n".join(lines)
-    (root / "verdict.md").write_text(text + "\n")
+    (root / fname).write_text(text + "\n")
     print(text)
-    print(f"\nwritten {root / 'verdict.md'}")
-    plot(data, stats_by_cell, chosen_by_cell, root / "frontier.png", "Fresh seeds: selected configurations")
+    print(f"\nwritten {root / fname}")
+    if make_plot:
+        plot(data, stats_by_cell, chosen_by_cell, root / "frontier.png", "Fresh seeds: selected configurations")
 
 
 ABLATION_PAIRS = [  # (a, b, question)
@@ -371,7 +377,11 @@ def main():
     ap.add_argument("--tau", type=float, default=0.05, help="violation threshold of the selection rule")
     ap.add_argument("--alpha", type=float, default=0.05)
     args = ap.parse_args()
-    dict(tune=tune, confirm=confirm, ablation=ablation)[args.phase](args)
+    if args.phase == "confirm":
+        confirm(args)  # tuned CASPER vs tuned penalty -> verdict.md
+        confirm(args, casper="casper_g0_l1", fname="verdict_untuned.md", make_plot=False)
+    else:
+        dict(tune=tune, ablation=ablation)[args.phase](args)
 
 
 if __name__ == "__main__":
