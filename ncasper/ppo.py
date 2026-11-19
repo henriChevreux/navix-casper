@@ -18,7 +18,8 @@ inside S, so the shields' guarantee holds. PPO's ratio and entropy use pi.
 Evaluation acts with q itself (pure top-k sampling). CASPER adds restoration
 lambda/2 ||z - p||^2; mask_pen adds penalty_lambda * (raw probability on forbidden
 actions), the simple masking + penalty baseline; mask_rest adds the same restoration
-term as CASPER but towards mask's projection, lambda/2 ||mask(p) - p||^2.
+term as CASPER but towards mask's projection, lambda/2 ||mask(p) - p||^2; mask_crest acts
+like mask but adds CASPER's own restoration term lambda/2 ||CASPER-k(p) - p||^2.
 """
 from __future__ import annotations
 
@@ -30,19 +31,19 @@ import jax.numpy as jnp
 import optax
 
 from .env import FORWARD, allowed_actions, make_env, reset, step_autoreset
-from .shields import apply_shield, topk_mask
+from .shields import apply_shield, casper_k, topk_mask
 
 
 @dataclass(frozen=True)
 class Config:
     env_id: str = "Navix-LavaGapS7-v0"
     full_action_set: bool = False
-    shield: str = "casper"  # none | mask | mask_pen | mask_rest | casper
+    shield: str = "casper"  # none | mask | mask_pen | mask_rest | mask_crest | casper
     k: int = 2  # top-k sampling (k=1 = greedy)
     explore_eps: float = 0.05  # uniform exploration over S mixed into the behaviour policy
     casper_eps: float = 1e-3
     casper_gamma: float = 0.0  # 0 = plain CASPER-k; 1 = gamma-tilted margins
-    casper_lambda: float = 1.0  # restoration weight lambda/2 ||z - p||^2 (casper, and mask_rest with z = mask(p))
+    casper_lambda: float = 1.0  # restoration weight: casper and mask_crest (toward CASPER-k(p)), mask_rest (toward mask(p))
     penalty_lambda: float = 1.0  # mask_pen: weight of the forbidden-mass penalty sum_{j not in S} p_j
     budget: int = 1_000_000  # env steps per seed
     num_envs: int = 64
@@ -153,8 +154,12 @@ def make_train(cfg: Config):
         v_clip = batch["value"] + jnp.clip(value - batch["value"], -cfg.clip_eps, cfg.clip_eps)
         critic = 0.5 * jnp.maximum((value - targets) ** 2, (v_clip - targets) ** 2).mean()
         entropy = -jnp.where(q > 0, q * jnp.log(jnp.maximum(q, 1e-30)), 0.0).sum(-1).mean()
-        restoration = 0.5 * ((z - p) ** 2).sum(-1).mean()
-        rest_w = cfg.casper_lambda if cfg.shield in ("casper", "mask_rest") else 0.0
+        if cfg.shield == "mask_crest":  # act with mask, regularise toward CASPER's projection
+            z_rest = casper_k(p, batch["allowed"], cfg.k, cfg.casper_eps, cfg.casper_gamma)[0]
+        else:
+            z_rest = z
+        restoration = 0.5 * ((z_rest - p) ** 2).sum(-1).mean()
+        rest_w = cfg.casper_lambda if cfg.shield in ("casper", "mask_rest", "mask_crest") else 0.0
         forbidden_mass = jnp.where(batch["allowed"], 0.0, p).sum(-1).mean()
         pen_w = cfg.penalty_lambda if cfg.shield == "mask_pen" else 0.0
         total = (actor + cfg.vf_coef * critic - cfg.ent_coef * entropy

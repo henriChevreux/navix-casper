@@ -34,12 +34,16 @@ from pathlib import Path
 
 import numpy as np
 
-FAMILIES = ("none", "mask", "mask_pen", "mask_rest", "casper", "casper_off")
+FAMILIES = ("none", "mask", "mask_pen", "mask_rest", "mask_crest", "casper", "casper_off")
 # Paired comparisons in the confirm verdict: (a, b, question). a and b are families; each
 # resolves to the selected config of that family in the cell (fixed ones: none, mask, casper_off).
 PAIRS = [
     ("casper", "mask_pen", "CASPER vs mask + penalty"),
     ("casper", "mask_rest", "CASPER vs mask + the same restoration loss: does CASPER's projection matter?"),
+    ("casper", "mask_crest", "CASPER vs mask + CASPER's restoration: does using the projection in the forward "
+     "pass matter, beyond using it as the restoration target?"),
+    ("mask_crest", "mask_rest", "Both act with mask; restoration toward CASPER's vs mask's projection: does the "
+     "target matter?"),
     ("casper", "mask", "CASPER vs plain mask"),
     ("casper_off", "mask", "CASPER with restoration off vs mask: the projection's gradient alone"),
 ]
@@ -50,6 +54,8 @@ def family(method: str) -> str:
         return "mask_pen"
     if method.startswith("maskrest"):
         return "mask_rest"
+    if method.startswith("maskcrest"):
+        return "mask_crest"
     if method == "casper_g0_l0":
         return "casper_off"
     if method.startswith("casper"):
@@ -124,7 +130,7 @@ def plot(data, stats_by_cell, chosen_by_cell, path, title):
     ncol = 3
     nrow = (len(cells) + ncol - 1) // ncol
     fig, axes = plt.subplots(nrow, ncol, figsize=(5 * ncol, 4 * nrow), squeeze=False)
-    colors = dict(none="tab:gray", mask="tab:orange", mask_pen="tab:red", mask_rest="tab:brown",
+    colors = dict(none="tab:gray", mask="tab:orange", mask_pen="tab:red", mask_rest="tab:brown", mask_crest="tab:cyan",
                   casper="tab:green", casper_off="tab:olive")
     for ax, cell in zip(axes.ravel(), cells):
         stats = stats_by_cell[cell]
@@ -195,7 +201,7 @@ def tune(args):
             mark = "**←**" if chosen.get(family(m)) == m else ""
             lines.append(f"| {m} | {fmt(stats[m])} | {mark} |")
         c = chosen.get("casper")
-        for other in ("mask_pen", "mask_rest"):
+        for other in ("mask_pen", "mask_rest", "mask_crest"):
             p = chosen.get(other)
             if c and p:
                 o_dom = [m for m, st in stats.items() if family(m) == other and dominates(st, stats[c])]
@@ -219,7 +225,7 @@ def tune(args):
         lines.append(f"| {m} | {np.mean([st['success'] for st in sts]):.3f} | "
                      f"{np.mean(v) if v else float('nan'):.3f} | {meet}/{len(sts)} |")
     lines += ["", "## Dominance count (tuning means)", ""]
-    for other in ("mask_pen", "mask_rest"):
+    for other in ("mask_pen", "mask_rest", "mask_crest"):
         d = [x for x in dom if x[1] == other]
         if d:
             lines += [f"- cells where some {other} config dominates the selected casper: {sum(x[2] for x in d)}/{len(d)}",

@@ -1,7 +1,8 @@
 """The CASPER-k vs masking + penalty comparison: a hyperparameter grid, run in two phases.
 
 Phase 1, tune (seeds 0..15 by default): the penalty (3 lambdas), CASPER (3 restoration
-weights) and mask + restoration (the same 3 weights, mask's projection as target) are tuned
+weights), mask + restoration (the same 3 weights, mask's projection as target) and mask +
+CASPER restoration (the same 3 weights, CASPER's projection as target) are tuned
 with the same budget and the same selection rule, per cell. none, mask and CASPER with
 restoration off have nothing to tune and run in confirm only. Confirm also always runs CASPER's default
 (restoration 1), for the "untuned CASPER vs tuned penalty" verdict.
@@ -66,6 +67,9 @@ CASPER_GRID = [(0.0, 0.3), (0.0, 1.0), (0.0, 3.0)]  # (gamma, restoration lambda
 # Control for "is it CASPER's projection or just the restoration loss?": the same restoration
 # loss lambda/2 ||z - p||^2 and the same weights, but with mask's projection z = mask(p) as target.
 MASKREST_GRID = [0.3, 1.0, 3.0]
+# The 4th cell of the 2x2 (forward layer: mask / CASPER) x (restoration target: mask / CASPER):
+# act with mask, regularise toward CASPER's projection. Same weights.
+MASKCREST_GRID = [0.3, 1.0, 3.0]
 # Nothing to tune, confirm phase only: none, mask, and CASPER with restoration off (the
 # projection's gradient alone).
 UNTUNED = ("none", "mask", "casper_g0_l0")
@@ -89,6 +93,7 @@ def methods(phase="confirm"):
     out += [(f"casper_g{g:g}_l{l:g}", "casper", ["--casper-gamma", str(g), "--casper-lambda", str(l)])
             for g, l in CASPER_GRID]
     out += [(f"maskrest_l{l:g}", "mask_rest", ["--casper-lambda", str(l)]) for l in MASKREST_GRID]
+    out += [(f"maskcrest_l{l:g}", "mask_crest", ["--casper-lambda", str(l)]) for l in MASKCREST_GRID]
     out += [("casper_g0_l0", "casper", ["--casper-gamma", "0.0", "--casper-lambda", "0.0"])]
     return out
 

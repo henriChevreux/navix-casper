@@ -22,6 +22,7 @@ All act on the policy's output distribution p = softmax(logits). The agent sampl
 | `mask` | p restricted to S, renormalised | top-k inside S | support ⊆ S |
 | `mask_pen` | as `mask`; the loss adds `--penalty-lambda` × (raw probability on forbidden actions) | top-k inside S | support ⊆ S |
 | `mask_rest` | as `mask`; the loss adds CASPER's restoration term with mask's projection as the target, `--casper-lambda`/2 · ‖mask(p) − p‖² | top-k inside S | support ⊆ S |
+| `mask_crest` | as `mask`; the loss adds CASPER's own restoration term, `--casper-lambda`/2 · ‖CASPER-k(p) − p‖² | top-k inside S | support ⊆ S |
 | `casper` | CASPER-k(p, S) | k largest of p inside S | support ⊆ S |
 
 - **CASPER-k** is the project's surrogate (a line-by-line port of `casper_k` from `casper_k/casperk_learning_study.py`, checked against it in `tests/`):
@@ -92,13 +93,20 @@ Everything stays in probability space. Cells are map × (action setting, explora
 |---|---|
 | maps | LavaGapS7, DistShift1, LavaCrossingS9N1 (the last needs NAVIX ≥ 0.8, i.e. Python ≥ 3.12; it's skipped otherwise), Dynamic-Obstacles-6x6 (3 actions only) |
 | (setting, ε) | `a3k2` ε = .05 and .15, `a3k3` ε = .05 (3 actions, k = 2 / 3, 5M). ε = .15 tests whether CASPER's k = 2 advantage is just exploration. `--settings a3k2 a3k3 a7k2` adds 7 actions / 20M; `--full-grid` runs every combination. |
-| tuned (tune phase), same budget and rule | mask_pen λ ∈ {0.01, 0.1, 0.3}; casper restoration λ_r ∈ {0.3, 1, 3} (γ = 0); mask_rest λ_r ∈ {0.3, 1, 3}; each selected per cell |
+| tuned (tune phase), same budget and rule | mask_pen λ ∈ {0.01, 0.1, 0.3}; casper restoration λ_r ∈ {0.3, 1, 3} (γ = 0); mask_rest and mask_crest λ_r ∈ {0.3, 1, 3}; each selected per cell |
 | fixed (confirm only) | none, mask, casper with restoration off (λ_r = 0: the projection's gradient alone); plus casper's default (λ_r = 1) for the untuned verdict |
 
 **Is it CASPER's projection, or just the restoration loss?** `mask_rest` uses the same loss form and the same weights as CASPER's restoration, but regularises toward masking's projection instead of CASPER's. `verdict.md` compares:
 
 - CASPER vs mask_rest: does the projection used as the target matter?
 - CASPER with restoration off vs mask: is the projection's gradient alone a better signal?
+
+Together these fill a 2×2: the layer used when acting (mask or CASPER) × the restoration target (mask(p) or CASPER(p)). `mask_crest` acts like mask but regularises toward CASPER's projection, so the verdict also has:
+
+- CASPER vs mask_crest: does using the projection in the forward pass matter?
+- mask_crest vs mask_rest: does the target matter when both act with mask?
+
+Fig. 4 (`fig4_decomposition`) plots all four cells.
 
 Each run gives two metrics:
 

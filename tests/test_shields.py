@@ -107,3 +107,16 @@ def test_mask_rest_is_mask_at_execution_and_restoration_lowers_forbidden():
     # z = p (restoration 0) once nothing is forbidden
     p, z, _, _ = apply_shield(lg[None], jnp.ones((1, 3), bool), "mask_rest", 2)
     np.testing.assert_allclose(np.asarray(z), np.asarray(p), atol=1e-7)
+
+
+def test_mask_crest_acts_like_mask_and_uses_casper_restoration():
+    from ncasper.shields import casper_k
+    logits, S = _batch(seed=9)
+    a = apply_shield(logits, S, "mask", 2)
+    b = apply_shield(logits, S, "mask_crest", 2)
+    for x, y in zip(a, b):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+    # its restoration target is CASPER-k's projection (same as the casper shield's z)
+    p = jax.nn.softmax(logits, -1)
+    np.testing.assert_allclose(np.asarray(casper_k(p, S, 2)[0]),
+                               np.asarray(apply_shield(logits, S, "casper", 2)[1]), atol=1e-7)

@@ -10,6 +10,9 @@ samples from q_k(z) = z restricted to T and renormalised.
   mask_rest same as mask; the training loss adds CASPER's restoration term with mask's
             projection as the target, lambda/2 ||mask(p) - p||^2 (see ppo.py). Same loss form
             as CASPER, different projection: isolates what CASPER's projection contributes.
+  mask_crest same as mask; the training loss adds CASPER's own restoration term,
+            lambda/2 ||CASPER-k(p) - p||^2. CASPER as the training target only, masking in the
+            forward pass: separates the projection's two roles (acting vs. regularising).
   casper  z = CASPER-k(p, S),            T = top_k of p within S (CASPER-k, this project)
 
 CASPER-k (surrogate, Thm 2 / Prop 3 of the project's sec3 notes; a line-by-line
@@ -33,7 +36,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-SHIELDS = ("none", "mask", "mask_pen", "mask_rest", "casper")
+SHIELDS = ("none", "mask", "mask_pen", "mask_rest", "mask_crest", "casper")
 
 
 def topk_mask(scores: jax.Array, k: int) -> jax.Array:
@@ -84,7 +87,7 @@ def apply_shield(logits: jax.Array, allowed: jax.Array, shield: str, k: int,
     p = jax.nn.softmax(logits, axis=-1)
     if shield == "none":
         z, T = p, topk_mask(p, k)
-    elif shield in ("mask", "mask_pen", "mask_rest"):
+    elif shield in ("mask", "mask_pen", "mask_rest", "mask_crest"):
         z, T = mask_topk(p, allowed, k)
     elif shield == "casper":
         z, T = casper_k(p, allowed, k, eps, gamma)

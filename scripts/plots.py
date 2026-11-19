@@ -25,14 +25,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Reference palette (dataviz skill), first three categorical slots: validated all-pairs.
+# Hue = the projection the learning signal comes from (blue CASPER, orange mask, aqua penalty);
+# marker = the layer used when acting (circle CASPER, diamond/square mask).
 C = dict(casper="#2a78d6", mask="#eb6834", pen="#1baf7a", none="#8a8984",
-         mask_rest="#eb6834", casper_off="#2a78d6")  # same hue as their parent, told apart by marker/line
-MARKER = dict(casper="o", pen="o", mask_rest="D")
-DASHED = {"mask_rest", "casper_off"}  # line style in the training-curve figure
+         mask_rest="#eb6834", mask_crest="#2a78d6", casper_off="#2a78d6")
+MARKER = dict(casper="o", pen="o", mask_rest="D", mask_crest="D")
+DASHED = {"mask_rest", "casper_off", "mask_crest"}  # hollow dots in fig 2
+LS = dict(mask_rest="--", casper_off="--", mask_crest=":")  # line style in the training-curve figure
 INK, INK2, GRID = "#0b0b0b", "#52514e", "#e6e5e0"
 LABEL = dict(casper="CASPER-k", mask="mask", pen="mask + penalty", none="no shield",
-             mask_rest="mask + restoration", casper_off="CASPER-k, restoration off")
-SHORT = dict(casper="CASPER", mask="mask", pen="pen", none="none", mask_rest="mask\n+rest", casper_off="CASPER\nno rest.")
+             mask_rest="mask + restoration", casper_off="CASPER-k, restoration off",
+             mask_crest="mask + CASPER restoration")
+SHORT = dict(casper="CASPER", mask="mask", pen="pen", none="none", mask_rest="mask\n+rest",
+             casper_off="CASPER\nno rest.", mask_crest="mask\n+C.rest")
 
 CELLS = [  # (cell, panel title)
     ("LavaGapS7_a3k2_eps0.05", "LavaGap · k=2 · ε=.05"),
@@ -73,6 +78,8 @@ def family(m):
         return "pen"
     if m.startswith("maskrest"):
         return "mask_rest"
+    if m.startswith("maskcrest"):
+        return "mask_crest"
     if m == "casper_g0_l0":
         return "casper_off"
     return "casper" if m.startswith("casper") else m
@@ -83,7 +90,7 @@ def lam(m):
     return float(re.sub(r"^pen", "", m)) if m.startswith("pen") else float(m.split("_l")[-1])
 
 
-PARAM = dict(pen="λ", casper="λr", mask_rest="λr")  # labels: penalty strength, CASPER restoration weight
+PARAM = dict(pen="λ", casper="λr", mask_rest="λr", mask_crest="λr")  # labels: penalty strength, CASPER restoration weight
 SELECTION = {}  # cell -> {family: method}, from results/tune/selection.json
 
 
@@ -100,7 +107,8 @@ def save(fig, fig_dir: Path, name):
 
 
 # --------------------------------------------------------------------------- fig 1
-def fig_frontier(conf, tune, fig_dir):
+def fig_frontier(conf, tune, fig_dir, fams=("casper", "pen"), show_off=False, name="fig1_frontier",
+                 fig_title="Success vs. rule violation: CASPER-k vs mask + penalty, each tuned over 3 settings"):
     fig, axes = plt.subplots(2, 3, figsize=(11, 6.8), sharex=True)
     for idx, (ax, (cell, title)) in enumerate(zip(axes.flat, CELLS)):
         runs = conf.get(cell, {})
@@ -123,7 +131,8 @@ def fig_frontier(conf, tune, fig_dir):
             ax.annotate(text, (x, y), xytext=(dx, dy), textcoords="offset points", fontsize=7.5, **kw)
 
         # single markers first, registered so curve labels keep clear of them
-        for m, marker, fam in (("none", "^", "none"), ("mask", "s", "mask"), ("casper_g0_l0", "o", "casper_off")):
+        singles = (("none", "^", "none"), ("mask", "s", "mask")) + ((("casper_g0_l0", "o", "casper_off"),) if show_off else ())
+        for m, marker, fam in singles:
             if m not in runs:
                 continue
             (vx, vs), (sy, ss) = mse(runs[m]["viol"]), mse(runs[m]["success"])
@@ -140,7 +149,7 @@ def fig_frontier(conf, tune, fig_dir):
 
         # tuned families as curves over their hyperparameter: confirm seeds (solid) first so their
         # labels win, then tuning seeds (faint). CASPER with restoration off is the ablation marker above.
-        for fam in ("casper", "pen", "mask_rest"):
+        for fam in fams:
             for src, alpha, ls, filled in ((runs, 1.0, "-", True), (tune.get(cell, {}), 0.45, "--", False)):
                 ms_ = sorted((m for m in src if family(m) == fam), key=lam)
                 pts = [(mse(src[m]["viol"]), mse(src[m]["success"]), lam(m), m) for m in ms_]
@@ -167,32 +176,28 @@ def fig_frontier(conf, tune, fig_dir):
         ax.set_ylabel("task success with the layer")
     axes[0, 0].annotate("better", xy=(0.02, 1.0), xytext=(0.2, 0.82), fontsize=8, color=INK2,
                         arrowprops=dict(arrowstyle="->", color=INK2, lw=1))
-    handles = [
-        plt.Line2D([], [], marker="o", ms=9, color=C["casper"], mec="white", ls="-", lw=2,
-                   label="CASPER-k (confirm seeds)"),
-        plt.Line2D([], [], marker="o", ms=7, color=C["casper"], mfc="white", ls="--", lw=2, alpha=0.5,
-                   label="CASPER-k (tuning seeds)"),
-        plt.Line2D([], [], marker="o", ms=7, color=C["pen"], ls="-", lw=2, label="mask + penalty (confirm seeds)"),
-        plt.Line2D([], [], marker="o", ms=7, color=C["pen"], mfc="white", ls="--", lw=2, alpha=0.5,
-                   label="mask + penalty (tuning seeds)"),
-        plt.Line2D([], [], marker="D", ms=7, color=C["mask_rest"], mec="white", ls="-", lw=2,
-                   label="mask + restoration (confirm seeds)"),
-        plt.Line2D([], [], marker="D", ms=6, color=C["mask_rest"], mfc="white", ls="--", lw=2, alpha=0.5,
-                   label="mask + restoration (tuning seeds)"),
-        plt.Line2D([], [], marker="s", ms=8, color=C["mask"], mec="white", ls="", label="mask"),
-        plt.Line2D([], [], marker="o", ms=8, color=C["casper"], mfc="white", ls="", label="CASPER-k, restoration off"),
-        plt.Line2D([], [], marker="^", ms=8, color=C["none"], mec="white", ls="", label="no shield"),
-        plt.Line2D([], [], marker="o", ms=11, mfc="none", mec=INK, ls="", label="selected by the rule"),
-    ]
-    fig.legend(handles=handles, loc="lower center", ncol=5, bbox_to_anchor=(0.5, -0.08), fontsize=8)
-    fig.suptitle("Success vs. rule violation: CASPER-k, mask + penalty and mask + restoration, each tuned over 3 settings",
-                 x=0.01, ha="left", fontsize=11, color=INK)
-    fig.text(0.01, 0.935, "Mean ± SE over 32 paired seeds (tuning-seed points: 16 other seeds). "
-             "Violation = share of rule-active steps where the raw greedy policy picks the forbidden move. "
-             "λ = penalty strength, λr = restoration weight (CASPER's, or mask's for mask + restoration).",
-             fontsize=8, color=INK2)
-    fig.tight_layout(rect=(0, 0.02, 1, 0.93))
-    save(fig, fig_dir, "fig1_frontier")
+    handles = []
+    for fam in fams:
+        handles += [
+            plt.Line2D([], [], marker=MARKER[fam], ms=8, color=C[fam], mec="white", ls="-", lw=2,
+                       label=f"{LABEL[fam]} (confirm seeds)"),
+            plt.Line2D([], [], marker=MARKER[fam], ms=6, color=C[fam], mfc="white", ls="--", lw=2, alpha=0.5,
+                       label=f"{LABEL[fam]} (tuning seeds)")]
+    handles.append(plt.Line2D([], [], marker="s", ms=8, color=C["mask"], mec="white", ls="", label="mask"))
+    if show_off:
+        handles.append(plt.Line2D([], [], marker="o", ms=8, color=C["casper"], mfc="white", ls="",
+                                  label="CASPER-k, restoration off"))
+    handles += [plt.Line2D([], [], marker="^", ms=8, color=C["none"], mec="white", ls="", label="no shield"),
+                plt.Line2D([], [], marker="o", ms=11, mfc="none", mec=INK, ls="", label="selected by the rule")]
+    fig.legend(handles=handles, loc="lower center", ncol=4, bbox_to_anchor=(0.5, -0.08), fontsize=8)
+    fig.suptitle(fig_title, x=0.01, ha="left", fontsize=11, color=INK)
+    fig.text(0.01, 0.955, "Mean ± SE over 32 paired seeds (tuning-seed points: 16 other seeds). "
+             "Violation = share of rule-active steps where the raw greedy policy picks the forbidden move.\n"
+             "λ = penalty strength, λr = restoration weight. Colour = projection the signal comes from, "
+             "marker = layer used when acting (circle CASPER, diamond mask).",
+             fontsize=8, color=INK2, va="top")
+    fig.tight_layout(rect=(0, 0.02, 1, 0.9))
+    save(fig, fig_dir, name)
 
 
 # --------------------------------------------------------------------------- fig 2
@@ -208,8 +213,8 @@ def selected(runs, cell):
 
 
 def fig_outcomes(conf_only, fig_dir):
-    fams = ["none", "mask", "pen", "mask_rest", "casper", "casper_off"]
-    fig, axes = plt.subplots(2, len(CELLS), figsize=(17, 5.8), sharey="row")
+    fams = ["none", "mask", "pen", "casper"]  # the decomposition controls are in fig 4 and verdict.md
+    fig, axes = plt.subplots(2, len(CELLS), figsize=(13.5, 5.9), sharey="row")
     rng = np.random.default_rng(0)
     for j, (cell, title) in enumerate(CELLS):
         runs = conf_only.get(cell, {})
@@ -242,10 +247,10 @@ def fig_outcomes(conf_only, fig_dir):
     axes[1, 0].set_ylabel("violation\n(layer removed)  ↓")
     fig.suptitle("Per-seed outcomes on 32 fresh seeds: same execution, different learned policies",
                  x=0.01, ha="left", fontsize=11, color=INK)
-    fig.text(0.01, 0.925, "Dots = seeds, bars = mean ± SE. λ (penalty) and λr (restoration, CASPER's or mask's) are each picked by "
-             "the same pre-declared rule on separate tuning seeds; hollow = CASPER with restoration off. No shield on Dynamic-Obstacles never moves "
-             "(0 success, hence 0 violation).", fontsize=8, color=INK2)
-    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.text(0.01, 0.945, "Dots = seeds, bars = mean ± SE. λ (penalty) and λr (restoration, CASPER's or mask's) are each picked by\n"
+             "the same pre-declared rule on separate tuning seeds. No shield on Dynamic-Obstacles never moves "
+             "(0 success, hence 0 violation).", fontsize=8, color=INK2, va="top")
+    fig.tight_layout(rect=(0, 0, 1, 0.88))
     save(fig, fig_dir, "fig2_outcomes")
 
 
@@ -256,7 +261,7 @@ def fig_curves(conf_only, fig_dir):
         runs = conf_only.get(cell, {})
         sel = selected(runs, cell)
         ends = []  # (y, label) of each line's end, spread out below
-        for fam in ("mask", "pen", "mask_rest", "casper", "casper_off"):
+        for fam in ("mask", "pen", "casper"):
             m = sel.get(fam)
             if m not in runs:
                 continue
@@ -266,7 +271,7 @@ def fig_curves(conf_only, fig_dir):
             mu, se = np.nanmean(c, 0), np.nanstd(c, 0) / np.sqrt(c.shape[0])
             x = np.linspace(0, BUDGET, len(mu)) / 1e6
             ax.fill_between(x, mu - se, mu + se, color=C[fam], alpha=0.18, lw=0)
-            ax.plot(x, mu, color=C[fam], lw=2, ls="--" if fam in DASHED else "-")
+            ax.plot(x, mu, color=C[fam], lw=2, ls=LS.get(fam, "-"))
             label = SHORT[fam].replace("\n", " ") + (f" {PARAM[fam]}={lam(m):g}" if fam in PARAM else "")
             ends.append([float(mu[-1]), label])
         ends.sort()
@@ -289,7 +294,7 @@ def fig_curves(conf_only, fig_dir):
         ax.set_ylabel("raw policy picks forbidden move\n(share of rule-active steps)")
     fig.suptitle("During training, masking leaves the network's preference for the forbidden move intact",
                  x=0.01, ha="left", fontsize=11, color=INK)
-    fig.text(0.01, 0.93, "Dashed: mask + restoration, and CASPER-k with restoration off. "
+    fig.text(0.01, 0.93, "CASPER-k and the penalty both train it away; the penalty pays for it in task success (Fig. 1-2). "
              "Raw argmax before the layer, training rollouts, mean ± SE over 32 seeds; "
              "executed violations are 0 for every shielded method.", fontsize=8, color=INK2)
     fig.tight_layout(rect=(0, 0, 0.96, 0.92))
@@ -312,6 +317,10 @@ def main():
     tune, conf_only, abl = load(root / "tune"), load(root / "confirm"), load(root / "ablation")
     conf = {c: {**conf_only.get(c, {}), **abl.get(c, {})} for c in set(conf_only) | set(abl)}
     fig_frontier(conf, tune, fig_dir)
+    fig_frontier(conf, tune, fig_dir, fams=("casper", "mask_crest", "mask_rest"), show_off=True,
+                 name="fig4_decomposition",
+                 fig_title="Where does CASPER-k's signal come from? Forward layer (circle CASPER, diamond mask) "
+                           "× restoration target (blue CASPER, orange mask)")
     fig_outcomes(conf_only, fig_dir)
     fig_curves(conf_only, fig_dir)
 
