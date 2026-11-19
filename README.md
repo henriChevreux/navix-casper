@@ -123,7 +123,9 @@ python scripts/sweep.py ablation --gpus 0,1,2    # 9 jobs, ~5 min on 3 GPUs
 python scripts/frontier.py ablation              # → results/ablation/ablation.md, frontier.png
 ```
 
-**Shared GPUs.** Before each job, `sweep.py` waits until the GPU has `--mem-gb` free (default 6 GB, polled every 30 s, up to `--max-wait-min` 120). Then JAX reserves exactly that much up front (`XLA_PYTHON_CLIENT_MEM_FRACTION`), so other users can't take it mid-run. A job that still runs out of memory is retried up to 3 times, running its seeds 8 at a time. Failures give a non-zero exit, so `&&` chains stop.
+**Shared GPUs.** Before each job, `sweep.py` waits until the GPU has `--mem-gb` + 3 GB free (default 6 GB, polled every 30 s, up to `--max-wait-min` 120). Then JAX reserves `--mem-gb` up front (`XLA_PYTHON_CLIENT_MEM_FRACTION`), so other users can't take it mid-run. The 3 GB of headroom is for the CUDA context and the cuSolver/cuBLAS handles, which live outside JAX's pool; on a nearly full GPU they fail with "cuSolver internal error" rather than out-of-memory.
+
+Launches on the same GPU are serialised and spaced 45 s apart, so two jobs never both count the same free memory. To run two jobs per GPU, list it twice (`--gpus 0,0,1,1,2,2`). A job hitting any GPU memory error is retried up to 3 times, running its seeds 8 at a time. Failures give a non-zero exit, so `&&` chains stop.
 
 Useful flags:
 

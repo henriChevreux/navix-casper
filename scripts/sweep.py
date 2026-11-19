@@ -33,6 +33,7 @@ results/<phase>/<cell>/<method>/<shield>.npz.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import itertools
 import json
 import os
@@ -155,10 +156,27 @@ def wait_for_memory(gpu, need_mib, max_wait_s, poll_s=30):
         time.sleep(poll_s)
 
 
+# Messages of a GPU that is short of memory. cuSolver/cuBLAS allocate their handles and workspaces
+# outside JAX's reserved pool, so on a nearly full GPU they fail with "internal error" rather than OOM.
+GPU_MEMORY_ERRORS = ("RESOURCE_EXHAUSTED", "out of memory", "cuSolver internal error",
+                     "CUBLAS_STATUS_ALLOC_FAILED", "CUBLAS_STATUS_NOT_INITIALIZED",
+                     "CUDA_ERROR_OUT_OF_MEMORY", "CUDNN_STATUS_ALLOC_FAILED")
+HEADROOM_MIB = 3 * 1024  # left free outside the reserved pool: CUDA context, cuSolver/cuBLAS handles
+LAUNCH_SETTLE_S = 45      # after starting a job, wait this long before starting another on the same GPU
+_gpu_locks = defaultdict(threading.Lock)
+
+
+def is_gpu_memory_error(text):
+    low = text.lower()
+    return any(m.lower() in low for m in GPU_MEMORY_ERRORS)
+
+
 def worker(gpu, q, logdir, lock, status, mem_gb=6.0, max_wait_min=120, max_attempts=4):
-    """One GPU. Before each job: wait until mem_gb is free, then let JAX reserve exactly that much up
-    front (XLA_PYTHON_CLIENT_MEM_FRACTION), so other users can't take it mid-run. On out-of-memory:
-    retry with seeds run 8 at a time, then wait and retry, up to max_attempts."""
+    """One worker on one GPU (list a GPU twice in --gpus for two workers on it).
+    Before each job: wait until mem_gb + headroom is free, then let JAX reserve mem_gb up front
+    (XLA_PYTHON_CLIENT_MEM_FRACTION), so other users can't take it mid-run. Launches on the same
+    GPU are serialised and spaced by LAUNCH_SETTLE_S, so two jobs never both see the same free
+    memory. On a GPU memory error: retry with seeds run 8 at a time, waiting, up to max_attempts."""
     need = int(mem_gb * 1024)
     while True:
         try:
@@ -166,25 +184,32 @@ def worker(gpu, q, logdir, lock, status, mem_gb=6.0, max_wait_min=120, max_attem
         except queue.Empty:
             return
         attempt = job.get("attempt", 1)
-        mem = wait_for_memory(gpu, need, max_wait_min * 60)
         env = dict(os.environ, CUDA_DEVICE_ORDER="PCI_BUS_ID",  # same numbering as nvidia-smi
                    CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1")
-        if mem is not None:
-            env.update(XLA_PYTHON_CLIENT_PREALLOCATE="true",
-                       XLA_PYTHON_CLIENT_MEM_FRACTION=f"{min(0.9, need / mem[1] + 0.005):.3f}")
-        else:  # no nvidia-smi: allocate on demand
-            env.update(XLA_PYTHON_CLIENT_PREALLOCATE="false")
         log = Path(logdir) / (job["tag"].replace("/", "__") + ".log")
-        t0 = time.time()
-        with open(log, "w") as f:
-            rc = subprocess.call(job["cmd"], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT)
+        with _gpu_locks[gpu]:
+            mem = wait_for_memory(gpu, need + HEADROOM_MIB, max_wait_min * 60)
+            if mem is not None:
+                env.update(XLA_PYTHON_CLIENT_PREALLOCATE="true",
+                           XLA_PYTHON_CLIENT_MEM_FRACTION=f"{min(0.9, need / mem[1] + 0.005):.3f}")
+            else:  # no nvidia-smi: allocate on demand
+                env.update(XLA_PYTHON_CLIENT_PREALLOCATE="false")
+            t0 = time.time()
+            f = open(log, "w")
+            proc = subprocess.Popen(job["cmd"], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT)
+            try:  # let it create its CUDA context and reserve its pool before the next launch here
+                proc.wait(timeout=LAUNCH_SETTLE_S)
+            except subprocess.TimeoutExpired:
+                pass
+        rc = proc.wait()
+        f.close()
         ok = rc == 0 and Path(ROOT / job["target"]).exists()
         text = "" if ok else log.read_text(errors="ignore")
-        oom = not ok and ("RESOURCE_EXHAUSTED" in text or "out of memory" in text.lower())
+        oom = not ok and is_gpu_memory_error(text)
         if oom and attempt < max_attempts:
             cmd = job["cmd"] if "--seed-chunk" in job["cmd"] else job["cmd"] + ["--seed-chunk", "8"]
             with lock:
-                print(f"[gpu {gpu}] {job['tag']}: out of GPU memory (attempt {attempt}/{max_attempts}), "
+                print(f"[gpu {gpu}] {job['tag']}: GPU memory error (attempt {attempt}/{max_attempts}), "
                       f"retrying with --seed-chunk 8", flush=True)
             if attempt >= 2:
                 time.sleep(60)  # give the other users' memory a minute to come back
@@ -193,7 +218,7 @@ def worker(gpu, q, logdir, lock, status, mem_gb=6.0, max_wait_min=120, max_attem
             continue
         with lock:
             status["done"] += 1
-            state = "ok" if ok else f"FAILED{' (GPU out of memory)' if oom else ''} (see {log})"
+            state = "ok" if ok else f"FAILED{' (GPU memory error)' if oom else ''} (see {log})"
             if state != "ok":
                 status["failed"].append(job["tag"])
             print(f"[gpu {gpu}] {status['done']}/{status['total']} {job['tag']}: {state} "
