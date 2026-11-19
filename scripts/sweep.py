@@ -128,27 +128,70 @@ def build_jobs(phase, envs, cells, out, selection=None, budget_scale=1.0, n_seed
     return jobs
 
 
-def worker(gpu, q, logdir, lock, status):
+def gpu_memory(gpu):
+    """(free MiB, total MiB) of one GPU from nvidia-smi, or None if it can't be read."""
+    try:
+        out = subprocess.run(["nvidia-smi", "-i", str(gpu), "--query-gpu=memory.free,memory.total",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=20)
+        free, total = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
+        return free, total
+    except Exception:
+        return None
+
+
+def wait_for_memory(gpu, need_mib, max_wait_s, poll_s=30):
+    """Block until the GPU has need_mib free (other users' jobs come and go). Returns (free, total) or None."""
+    t0, said = time.time(), False
+    while True:
+        mem = gpu_memory(gpu)
+        if mem is None or mem[0] >= need_mib or time.time() - t0 > max_wait_s:
+            if said:
+                print(f"[gpu {gpu}] {'memory free again' if mem and mem[0] >= need_mib else 'stopped waiting'} "
+                      f"after {time.time() - t0:.0f}s", flush=True)
+            return mem
+        if not said:
+            print(f"[gpu {gpu}] waiting: {mem[0]} MiB free, need {need_mib} MiB (other users)", flush=True)
+            said = True
+        time.sleep(poll_s)
+
+
+def worker(gpu, q, logdir, lock, status, mem_gb=6.0, max_wait_min=120, max_attempts=4):
+    """One GPU. Before each job: wait until mem_gb is free, then let JAX reserve exactly that much up
+    front (XLA_PYTHON_CLIENT_MEM_FRACTION), so other users can't take it mid-run. On out-of-memory:
+    retry with seeds run 8 at a time, then wait and retry, up to max_attempts."""
+    need = int(mem_gb * 1024)
     while True:
         try:
             job = q.get_nowait()
         except queue.Empty:
             return
-        env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(gpu), XLA_PYTHON_CLIENT_PREALLOCATE="false",
-                   PYTHONUNBUFFERED="1")
+        attempt = job.get("attempt", 1)
+        mem = wait_for_memory(gpu, need, max_wait_min * 60)
+        env = dict(os.environ, CUDA_DEVICE_ORDER="PCI_BUS_ID",  # same numbering as nvidia-smi
+                   CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1")
+        if mem is not None:
+            env.update(XLA_PYTHON_CLIENT_PREALLOCATE="true",
+                       XLA_PYTHON_CLIENT_MEM_FRACTION=f"{min(0.9, need / mem[1] + 0.005):.3f}")
+        else:  # no nvidia-smi: allocate on demand
+            env.update(XLA_PYTHON_CLIENT_PREALLOCATE="false")
         log = Path(logdir) / (job["tag"].replace("/", "__") + ".log")
         t0 = time.time()
         with open(log, "w") as f:
             rc = subprocess.call(job["cmd"], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT)
         ok = rc == 0 and Path(ROOT / job["target"]).exists()
-        oom = not ok and "RESOURCE_EXHAUSTED" in log.read_text(errors="ignore")
+        text = "" if ok else log.read_text(errors="ignore")
+        oom = not ok and ("RESOURCE_EXHAUSTED" in text or "out of memory" in text.lower())
+        if oom and attempt < max_attempts:
+            cmd = job["cmd"] if "--seed-chunk" in job["cmd"] else job["cmd"] + ["--seed-chunk", "8"]
+            with lock:
+                print(f"[gpu {gpu}] {job['tag']}: out of GPU memory (attempt {attempt}/{max_attempts}), "
+                      f"retrying with --seed-chunk 8", flush=True)
+            if attempt >= 2:
+                time.sleep(60)  # give the other users' memory a minute to come back
+            q.put(dict(job, cmd=cmd, attempt=attempt + 1))
+            q.task_done()
+            continue
         with lock:
-            if oom and not job.get("retried"):
-                # GPU memory is shared with other users: retry once with seeds run 8 at a time
-                q.put(dict(job, cmd=job["cmd"] + ["--seed-chunk", "8"], retried=True))
-                print(f"[gpu {gpu}] {job['tag']}: out of GPU memory, requeued with --seed-chunk 8", flush=True)
-                q.task_done()
-                continue
             status["done"] += 1
             state = "ok" if ok else f"FAILED{' (GPU out of memory)' if oom else ''} (see {log})"
             if state != "ok":
@@ -172,6 +215,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--budget-scale", type=float, default=1.0, help="multiply every budget (for quick tests)")
     ap.add_argument("--n-seeds", type=int, default=None, help="override the phase's number of seeds (for quick tests)")
+    ap.add_argument("--mem-gb", type=float, default=6.0,
+                    help="GPU memory each job waits for and reserves up front (default 6 GB)")
+    ap.add_argument("--max-wait-min", type=float, default=120,
+                    help="max minutes to wait for free GPU memory before trying anyway")
     ap.add_argument("--extra", default="", help='flags appended to every run.py call, e.g. "--seed-chunk 8"')
     args = ap.parse_args()
 
@@ -208,7 +255,8 @@ def main():
     for j in todo:
         q.put(j)
     lock, status = threading.Lock(), dict(done=0, total=len(todo), failed=[])
-    threads = [threading.Thread(target=worker, args=(g, q, logdir, lock, status)) for g in gpus]
+    threads = [threading.Thread(target=worker, args=(g, q, logdir, lock, status, args.mem_gb, args.max_wait_min))
+               for g in gpus]
     for t in threads:
         t.start()
     for t in threads:

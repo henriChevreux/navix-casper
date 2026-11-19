@@ -123,6 +123,8 @@ python scripts/sweep.py ablation --gpus 0,1,2    # 9 jobs, ~5 min on 3 GPUs
 python scripts/frontier.py ablation              # → results/ablation/ablation.md, frontier.png
 ```
 
+**Shared GPUs.** Before each job, `sweep.py` waits until the GPU has `--mem-gb` free (default 6 GB, polled every 30 s, up to `--max-wait-min` 120). Then JAX reserves exactly that much up front (`XLA_PYTHON_CLIENT_MEM_FRACTION`), so other users can't take it mid-run. A job that still runs out of memory is retried up to 3 times, running its seeds 8 at a time. Failures give a non-zero exit, so `&&` chains stop.
+
 Useful flags:
 
 - `--dry-run` lists the jobs without running them.
